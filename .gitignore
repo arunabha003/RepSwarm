@@ -1,0 +1,7 @@
+# Foundry
+/cache/
+/out/
+# Local env
+.env
+# Local planning
+plan.md
