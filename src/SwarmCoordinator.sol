@@ -5,7 +5,7 @@ import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
 
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PathKey, PathKeyLibrary} from "v4-periphery/src/libraries/PathKey.sol";
 import {IV4Router} from "v4-periphery/src/interfaces/IV4Router.sol";
 import {V4Router} from "v4-periphery/src/V4Router.sol";
@@ -19,6 +19,7 @@ import {SwarmHookData} from "./libraries/SwarmHookData.sol";
 import {ISwarmCoordinator} from "./interfaces/ISwarmCoordinator.sol";
 
 interface IIdentityRegistry {
+    function isAuthorizedOrOwner(address spender, uint256 agentId) external view returns (bool);
     function getAgentWallet(uint256 agentId) external view returns (address);
 }
 
@@ -31,6 +32,7 @@ interface IReputationRegistry {
 
 contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinator {
     using PathKeyLibrary for PathKey;
+    using CurrencyLibrary for Currency;
 
     error DeadlinePassed(uint256 deadline);
     error IntentAlreadyExecuted(uint256 intentId);
@@ -328,8 +330,10 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
 
     function _requireIdentity(address agent, uint256 agentId) internal view {
         if (identityRegistry == address(0)) return;
-        address wallet = IIdentityRegistry(identityRegistry).getAgentWallet(agentId);
-        if (wallet != agent) revert UnauthorizedAgent(agent);
+        IIdentityRegistry registry = IIdentityRegistry(identityRegistry);
+        address wallet = registry.getAgentWallet(agentId);
+        if (wallet == agent) return;
+        if (!registry.isAuthorizedOrOwner(agent, agentId)) revert UnauthorizedAgent(agent);
     }
 
     function _requireReputation(uint256 agentId) internal view {
