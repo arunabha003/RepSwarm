@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {ISwarmCoordinator} from "../interfaces/ISwarmCoordinator.sol";
 import {IRouteAgent} from "../interfaces/IRouteAgent.sol";
-import {PathKey, PathKeyLibrary} from "v4-periphery/src/libraries/PathKey.sol";
+import {PathKey} from "v4-periphery/src/libraries/PathKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
@@ -11,7 +11,6 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 
 abstract contract SwarmAgentBase is IRouteAgent {
-    using PathKeyLibrary for PathKey;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
 
@@ -58,7 +57,19 @@ abstract contract SwarmAgentBase is IRouteAgent {
         view
         returns (PoolKey memory key, uint24 lpFee, uint128 liquidity)
     {
-        (key,) = step.getPoolAndSwapDirection(currencyIn);
+        // Build pool key from PathKey and currencyIn
+        Currency currencyOut = step.intermediateCurrency;
+        (Currency currency0, Currency currency1) =
+            currencyIn < currencyOut ? (currencyIn, currencyOut) : (currencyOut, currencyIn);
+        
+        key = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            fee: step.fee,
+            tickSpacing: step.tickSpacing,
+            hooks: step.hooks
+        });
+        
         PoolId poolId = key.toId();
         (, , , lpFee) = poolManager.getSlot0(poolId);
         liquidity = poolManager.getLiquidity(poolId);
