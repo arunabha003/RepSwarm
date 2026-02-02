@@ -11,16 +11,19 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 
 import {PathKey} from "v4-periphery/src/libraries/PathKey.sol";
 import {HookMiner} from "v4-periphery/src/utils/HookMiner.sol";
 
-import {PoolModifyLiquidityTest} from "lib/v4-core/src/test/PoolModifyLiquidityTest.sol";
+import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 
 import {SwarmCoordinator} from "../src/SwarmCoordinator.sol";
 import {SwarmTypes} from "../src/libraries/SwarmTypes.sol";
 import {ISwarmCoordinator} from "../src/interfaces/ISwarmCoordinator.sol";
 import {MevRouterHook} from "../src/hooks/MevRouterHook.sol";
+import {OracleRegistry} from "../src/oracles/OracleRegistry.sol";
+import {IOracleRegistry} from "../src/interfaces/IChainlinkOracle.sol";
 import {FeeOptimizerAgent} from "../src/agents/FeeOptimizerAgent.sol";
 import {SlippagePredictorAgent} from "../src/agents/SlippagePredictorAgent.sol";
 import {MevHunterAgent} from "../src/agents/MevHunterAgent.sol";
@@ -35,6 +38,7 @@ contract SwarmForkTest is Test {
     IPoolManager internal poolManager;
     SwarmCoordinator internal coordinator;
     MevRouterHook internal hook;
+    OracleRegistry internal oracleRegistry;
     FeeOptimizerAgent internal feeAgent;
     SlippagePredictorAgent internal slippageAgent;
     MevHunterAgent internal mevAgent;
@@ -83,7 +87,8 @@ contract SwarmForkTest is Test {
             amountOutMin: 1,
             deadline: uint64(block.timestamp + 1 hours),
             mevFeeBps: 30,
-            treasuryBps: 200
+            treasuryBps: 200,
+            lpShareBps: 8000 // 80% to LPs
         });
 
         uint256 intentId = coordinator.createIntent(params, candidates);
@@ -100,25 +105,116 @@ contract SwarmForkTest is Test {
 
         uint256 outBalanceAfter = currencyOut.balanceOf(address(this));
         uint256 treasuryBalanceAfter = currencyOut.balanceOf(TREASURY);
-        assertGt(outBalanceAfter, outBalanceBefore);
-        assertGt(treasuryBalanceAfter, treasuryBalanceBefore);
+        assertGt(outBalanceAfter, outBalanceBefore, "User should receive output tokens");
+        assertGt(treasuryBalanceAfter, treasuryBalanceBefore, "Treasury should receive fees");
 
-        SwarmTypes.Intent memory intent = _intent(intentId);
-        assertTrue(intent.executed);
+        ISwarmCoordinator.IntentView memory intentView = coordinator.getIntent(intentId);
+        assertTrue(intentView.executed, "Intent should be marked executed");
+    }
+
+    function test_mevCaptureAndLpDonation() public {
+        (Currency currencyIn, Currency currencyOut) = _intentCurrencies();
+
+        PathKey[] memory path = new PathKey[](1);
+        path[0] = PathKey({
+            intermediateCurrency: currencyOut,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
+            tickSpacing: poolKey.tickSpacing,
+            hooks: poolKey.hooks,
+            hookData: ""
+        });
+
+        bytes[] memory candidates = new bytes[](1);
+        candidates[0] = abi.encode(path);
+
+        // Higher MEV fee and LP share to test redistribution
+        SwarmTypes.IntentParams memory params = SwarmTypes.IntentParams({
+            currencyIn: currencyIn,
+            currencyOut: currencyOut,
+            amountIn: 1e18,
+            amountOutMin: 1,
+            deadline: uint64(block.timestamp + 1 hours),
+            mevFeeBps: 100, // 1% MEV fee
+            treasuryBps: 500, // 5% total fee
+            lpShareBps: 8000 // 80% of fees to LPs
+        });
+
+        uint256 intentId = coordinator.createIntent(params, candidates);
+
+        feeAgent.propose(intentId);
+        
+        _approveCoordinator(currencyIn);
+        
+        // Record balances before
+        uint256 treasuryBefore = currencyOut.balanceOf(TREASURY);
+        
+        coordinator.executeIntent(intentId);
+        
+        // Treasury should have received 20% of the fee (lpShareBps = 80% to LPs)
+        uint256 treasuryAfter = currencyOut.balanceOf(TREASURY);
+        assertGt(treasuryAfter, treasuryBefore, "Treasury should receive its share");
+    }
+
+    function test_multipleAgentVoting() public {
+        (Currency currencyIn, Currency currencyOut) = _intentCurrencies();
+
+        // Create two different path candidates
+        PathKey[] memory path1 = new PathKey[](1);
+        path1[0] = PathKey({
+            intermediateCurrency: currencyOut,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
+            tickSpacing: poolKey.tickSpacing,
+            hooks: poolKey.hooks,
+            hookData: ""
+        });
+
+        bytes[] memory candidates = new bytes[](1);
+        candidates[0] = abi.encode(path1);
+
+        SwarmTypes.IntentParams memory params = SwarmTypes.IntentParams({
+            currencyIn: currencyIn,
+            currencyOut: currencyOut,
+            amountIn: 1e17, // Smaller amount
+            amountOutMin: 1,
+            deadline: uint64(block.timestamp + 1 hours),
+            mevFeeBps: 50,
+            treasuryBps: 100,
+            lpShareBps: 7000 // 70% to LPs
+        });
+
+        uint256 intentId = coordinator.createIntent(params, candidates);
+
+        // All three agents vote
+        feeAgent.propose(intentId);
+        slippageAgent.propose(intentId);
+        mevAgent.propose(intentId);
+
+        // Verify proposals were recorded
+        address[] memory proposalAgents = coordinator.getProposalAgents(intentId);
+        assertEq(proposalAgents.length, 3, "Should have 3 proposals");
+
+        _approveCoordinator(currencyIn);
+        coordinator.executeIntent(intentId);
+
+        ISwarmCoordinator.IntentView memory intentView = coordinator.getIntent(intentId);
+        assertTrue(intentView.executed);
     }
 
     function _deployHook() internal {
+        // Deploy oracle registry first
+        oracleRegistry = new OracleRegistry();
+
         uint160 flags = uint160(
             Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
-        bytes memory constructorArgs = abi.encode(poolManager);
+        bytes memory constructorArgs = abi.encode(poolManager, IOracleRegistry(oracleRegistry));
         (address hookAddress, bytes32 salt) = HookMiner.find(
             address(this),
             flags,
             type(MevRouterHook).creationCode,
             constructorArgs
         );
-        hook = new MevRouterHook{salt: salt}(poolManager);
+        hook = new MevRouterHook{salt: salt}(poolManager, IOracleRegistry(oracleRegistry));
         require(address(hook) == hookAddress, "hook mismatch");
     }
 
@@ -136,7 +232,7 @@ contract SwarmForkTest is Test {
             hooks: IHooks(address(hook))
         });
 
-        poolManager.initialize(poolKey, TickMath.getSqrtRatioAtTick(0));
+        poolManager.initialize(poolKey, TickMath.getSqrtPriceAtTick(0));
 
         tokenA.mint(address(this), 1e24);
         tokenB.mint(address(this), 1e24);
@@ -202,6 +298,7 @@ contract SwarmForkTest is Test {
             deadline: viewIntent.deadline,
             mevFeeBps: viewIntent.mevFeeBps,
             treasuryBps: viewIntent.treasuryBps,
+            lpShareBps: viewIntent.lpShareBps,
             executed: viewIntent.executed
         });
     }
