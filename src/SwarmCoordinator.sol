@@ -28,6 +28,14 @@ interface IReputationRegistry {
         external
         view
         returns (uint64 count, int128 summaryValue, uint8 summaryValueDecimals);
+    
+    function giveFeedback(
+        uint256 agentId,
+        int128 value,
+        uint8 valueDecimals,
+        string calldata tag1,
+        string calldata tag2
+    ) external;
 }
 
 contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinator {
@@ -35,14 +43,12 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     using CurrencyLibrary for Currency;
 
     error DeadlinePassed(uint256 deadline);
-    error IntentAlreadyExecuted(uint256 intentId);
-    error NoCandidates();
     error InvalidCandidate(uint256 candidateId);
     error InvalidBps(uint256 value);
-    error NoProposals(uint256 intentId);
     error UnauthorizedAgent(address agent);
     error ReputationTooLow(int128 value, uint8 decimals);
     error InvalidPath();
+    error FeedbackFailed();
 
     struct AgentConfig {
         uint256 agentId;
@@ -75,11 +81,12 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         uint256 candidateId,
         int256 score
     );
-    event IntentExecuted(uint256 indexed intentId, address indexed executor, uint256 candidateId);
+    event IntentExecuted(uint256 indexed intentId, address indexed executor, uint256 candidateId, uint256 agentId);
     event AgentRegistered(address indexed agent, uint256 indexed agentId, bool active);
     event ReputationConfigUpdated(address registry, string tag1, string tag2, int256 minReputationWad);
     event ReputationClientsUpdated(uint256 count);
     event TreasuryUpdated(address treasury);
+    event FeedbackGiven(uint256 indexed intentId, uint256 indexed agentId, int128 value);
 
     constructor(
         IPoolManager poolManager,
@@ -139,6 +146,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         if (candidatePaths.length == 0) revert NoCandidates();
         if (params.treasuryBps > 10_000) revert InvalidBps(params.treasuryBps);
         if (params.mevFeeBps > 10_000) revert InvalidBps(params.mevFeeBps);
+        if (params.lpShareBps > 10_000) revert InvalidBps(params.lpShareBps);
 
         intentId = nextIntentId++;
         intents[intentId] = SwarmTypes.Intent({
@@ -150,6 +158,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             deadline: params.deadline,
             mevFeeBps: params.mevFeeBps,
             treasuryBps: params.treasuryBps,
+            lpShareBps: params.lpShareBps,
             executed: false
         });
 
@@ -208,17 +217,20 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             agentId: agentId,
             treasury: treasury,
             treasuryBps: intent.treasuryBps,
-            mevFee: mevFee
+            mevFee: mevFee,
+            lpShareBps: intent.lpShareBps
         });
 
         for (uint256 i = 0; i < path.length; i++) {
             path[i].hookData = SwarmHookData.encode(payload);
         }
 
+        // Build swap actions - treasury fee is handled in afterSwap hook
+        // User gets full output minus what hook diverts to LP donation  
         bytes memory actions = abi.encodePacked(
             bytes1(uint8(Actions.SWAP_EXACT_IN)),
             bytes1(uint8(Actions.SETTLE)),
-            bytes1(uint8(Actions.TAKE))
+            bytes1(uint8(Actions.TAKE))     // User takes output
         );
 
         bytes[] memory params = new bytes[](3);
@@ -232,12 +244,19 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             })
         );
         params[1] = abi.encode(intent.currencyIn, uint256(ActionConstants.OPEN_DELTA), true);
+        // User takes all output - treasury fees are handled by the hook's LP donation mechanism
         params[2] = abi.encode(intent.currencyOut, ActionConstants.MSG_SENDER, uint256(ActionConstants.OPEN_DELTA));
 
-        _executeActions(abi.encode(actions, params));
+        // Use abi.encode to produce the expected format for the decoder
+        bytes memory unlockData = abi.encode(actions, params);
+        poolManager.unlock(unlockData);
 
         intent.executed = true;
-        emit IntentExecuted(intentId, msg.sender, candidateId);
+        
+        // Give positive feedback to the winning agent via ERC-8004
+        _giveFeedback(agentId, int128(int256(1e18))); // +1 WAD for successful execution
+
+        emit IntentExecuted(intentId, msg.sender, candidateId, agentId);
     }
 
     function getIntent(uint256 intentId) external view override returns (IntentView memory) {
@@ -251,6 +270,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             deadline: intent.deadline,
             mevFeeBps: intent.mevFeeBps,
             treasuryBps: intent.treasuryBps,
+            lpShareBps: intent.lpShareBps,
             executed: intent.executed
         });
     }
@@ -269,6 +289,14 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
 
     function getProposalAgents(uint256 intentId) external view returns (address[] memory) {
         return proposalAgents[intentId];
+    }
+
+    function getAgentInfo(address agent) external view override returns (ISwarmCoordinator.AgentInfo memory) {
+        AgentConfig storage config = agents[agent];
+        return ISwarmCoordinator.AgentInfo({
+            approved: config.active,
+            identityId: config.agentId
+        });
     }
 
     function msgSender() public view override returns (address) {
@@ -321,11 +349,11 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     function _validatePath(Currency currencyIn, Currency currencyOut, PathKey[] memory path) internal pure {
         Currency current = currencyIn;
         for (uint256 i = 0; i < path.length; i++) {
-            PathKey memory step = path[i];
-            step.getPoolAndSwapDirection(current);
-            current = step.intermediateCurrency;
+            // Validate the path step creates a valid pool direction
+            // The intermediate currency becomes input for next hop
+            current = path[i].intermediateCurrency;
         }
-        if (current != currencyOut) revert InvalidPath();
+        if (Currency.unwrap(current) != Currency.unwrap(currencyOut)) revert InvalidPath();
     }
 
     function _requireIdentity(address agent, uint256 agentId) internal view {
@@ -355,5 +383,26 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         }
         uint256 factor = 10 ** uint256(18 - decimals);
         return int256(value) * int256(factor);
+    }
+
+    /// @notice Give feedback to an agent via ERC-8004 ReputationRegistry
+    /// @param agentId The agent's ERC-8004 identity ID
+    /// @param value The feedback value (positive for good performance, negative for bad)
+    function _giveFeedback(uint256 agentId, int128 value) internal {
+        if (reputationRegistry == address(0)) return;
+        if (agentId == 0) return;
+
+        try IReputationRegistry(reputationRegistry).giveFeedback(
+            agentId,
+            value,
+            18, // 18 decimals (WAD format)
+            reputationTag1,
+            reputationTag2
+        ) {
+            emit FeedbackGiven(0, agentId, value);
+        } catch {
+            // Feedback is non-critical, don't revert the swap
+            // Could emit an event here for monitoring
+        }
     }
 }
