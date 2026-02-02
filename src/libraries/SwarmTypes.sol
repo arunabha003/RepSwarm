@@ -12,6 +12,7 @@ library SwarmTypes {
         uint64 deadline;
         uint16 mevFeeBps;
         uint16 treasuryBps;
+        uint16 lpShareBps; // Percentage of captured MEV to donate to LPs (basis points, e.g., 8000 = 80%)
     }
 
     struct Intent {
@@ -23,6 +24,7 @@ library SwarmTypes {
         uint64 deadline;
         uint16 mevFeeBps;
         uint16 treasuryBps;
+        uint16 lpShareBps;
         bool executed;
     }
 
