@@ -254,7 +254,7 @@ contract SwarmForkTest is Test {
     function _deployAgents() internal {
         feeAgent = new FeeOptimizerAgent(coordinator, poolManager);
         slippageAgent = new SlippagePredictorAgent(coordinator, poolManager);
-        mevAgent = new MevHunterAgent(coordinator, poolManager);
+        mevAgent = new MevHunterAgent(coordinator, poolManager, IOracleRegistry(address(oracleRegistry)));
 
         coordinator.registerAgent(address(feeAgent), 1, true);
         coordinator.registerAgent(address(slippageAgent), 2, true);
