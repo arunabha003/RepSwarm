@@ -660,7 +660,6 @@ function _getPriceWithStalenessCheck(
 
 | Component | Simplification | Full Version |
 |-----------|---------------|--------------|
-| **Agent Scoring** | Constant scores | Dynamic ML-based scoring |
 | **Route Finding** | Single candidate | Dijkstra/Bellman-Ford pathfinding |
 | **Backrun Timing** | Manual keeper | MEV-aware timing with Flashbots |
 | **Fee Calculation** | Linear formula | Game-theoretic optimal fees |
@@ -671,8 +670,9 @@ function _getPriceWithStalenessCheck(
 |-----------|----------|--------|
 | Unit | ✅ 100% | Maintained |
 | Integration | ✅ Full flow | Edge cases |
+| ERC-8004 | ✅ Complete | - |
 | Fork (Sepolia) | ✅ Aave/Chainlink | Mainnet fork tests |
-| Fuzzing | ❌ None | Property-based testing |
+| Fuzzing | ✅ Basic | More property-based testing |
 | Formal Verification | ❌ None | Certora/Halmos specs |
 
 ---
@@ -681,9 +681,10 @@ function _getPriceWithStalenessCheck(
 
 ```
 □ Audit complete
-□ ERC-8004 registries deployed (or removed)
+□ Deploy contracts to Sepolia
+□ Register agents on ERC-8004 (use DeployERC8004Agents.s.sol)
 □ Mainnet Chainlink feeds configured
-□ Keeper infrastructure setup
+□ Keeper infrastructure setup (Gelato or custom)
 □ Frontend updated with addresses
 □ Monitoring/alerting configured
 □ Emergency pause mechanism tested
@@ -698,4 +699,7 @@ function _getPriceWithStalenessCheck(
 - [Aave V3 Flash Loans](https://docs.aave.com/developers/guides/flash-loans)
 - [Chainlink Price Feeds](https://docs.chain.link/data-feeds)
 - [ERC-8004 Spec](https://eips.ethereum.org/EIPS/eip-8004)
+- [8004.org Build Guide](https://8004.org/build)
+- [8004scan.io Explorer](https://8004scan.io/)
+- [Agent0 SDK](https://sdk.ag0.xyz/)
 - [detox-hook Reference](https://github.com/detox-hook/detox-hook)
