@@ -52,7 +52,7 @@ contract DeploySwarm is Script {
 
         FeeOptimizerAgent feeAgent = new FeeOptimizerAgent(coordinator, IPoolManager(poolManager));
         SlippagePredictorAgent slippageAgent = new SlippagePredictorAgent(coordinator, IPoolManager(poolManager));
-        MevHunterAgent mevAgent = new MevHunterAgent(coordinator, IPoolManager(poolManager));
+        MevHunterAgent mevAgent = new MevHunterAgent(coordinator, IPoolManager(poolManager), IOracleRegistry(oracleRegistry));
 
         uint256 feeAgentId = vm.envOr("FEE_AGENT_ID", uint256(0));
         if (feeAgentId != 0) coordinator.registerAgent(address(feeAgent), feeAgentId, true);
