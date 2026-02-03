@@ -17,27 +17,11 @@ import {IERC20Minimal} from "@uniswap/v4-core/src/interfaces/external/IERC20Mini
 import {SwarmTypes} from "./libraries/SwarmTypes.sol";
 import {SwarmHookData} from "./libraries/SwarmHookData.sol";
 import {ISwarmCoordinator} from "./interfaces/ISwarmCoordinator.sol";
+import {IERC8004IdentityRegistry, IERC8004ReputationRegistry, ERC8004Integration} from "./erc8004/ERC8004Integration.sol";
 
-interface IIdentityRegistry {
-    function isAuthorizedOrOwner(address spender, uint256 agentId) external view returns (bool);
-    function getAgentWallet(uint256 agentId) external view returns (address);
-}
-
-interface IReputationRegistry {
-    function getSummary(uint256 agentId, address[] calldata clientAddresses, string calldata tag1, string calldata tag2)
-        external
-        view
-        returns (uint64 count, int128 summaryValue, uint8 summaryValueDecimals);
-    
-    function giveFeedback(
-        uint256 agentId,
-        int128 value,
-        uint8 valueDecimals,
-        string calldata tag1,
-        string calldata tag2
-    ) external;
-}
-
+/// @title SwarmCoordinator
+/// @notice Coordinates multi-agent routing with ERC-8004 identity and reputation
+/// @dev Integrates with official ERC-8004 registries on Sepolia/Mainnet
 contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinator {
     using PathKeyLibrary for PathKey;
     using CurrencyLibrary for Currency;
@@ -66,12 +50,23 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     mapping(address => AgentConfig) public agents;
 
     address public treasury;
-    address public identityRegistry;
-    address public reputationRegistry;
+    
+    /// @notice ERC-8004 Identity Registry
+    IERC8004IdentityRegistry public identityRegistry;
+    
+    /// @notice ERC-8004 Reputation Registry
+    IERC8004ReputationRegistry public reputationRegistry;
+    
     string public reputationTag1;
     string public reputationTag2;
     address[] public reputationClients;
     int256 public minReputationWad;
+    
+    /// @notice Whether to enforce ERC-8004 identity verification
+    bool public enforceIdentity;
+    
+    /// @notice Whether to enforce minimum reputation
+    bool public enforceReputation;
 
     event IntentCreated(uint256 indexed intentId, address indexed requester, uint256 candidateCount);
     event ProposalSubmitted(
@@ -87,6 +82,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     event ReputationClientsUpdated(uint256 count);
     event TreasuryUpdated(address treasury);
     event FeedbackGiven(uint256 indexed intentId, uint256 indexed agentId, int128 value);
+    event EnforcementUpdated(bool enforceIdentity, bool enforceReputation);
 
     constructor(
         IPoolManager poolManager,
@@ -95,8 +91,27 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         address reputationRegistry_
     ) V4Router(poolManager) Ownable(msg.sender) {
         treasury = treasury_;
-        identityRegistry = identityRegistry_;
-        reputationRegistry = reputationRegistry_;
+        
+        // Use official ERC-8004 Sepolia addresses if not provided
+        if (identityRegistry_ == address(0)) {
+            identityRegistry = IERC8004IdentityRegistry(ERC8004Integration.SEPOLIA_IDENTITY_REGISTRY);
+        } else {
+            identityRegistry = IERC8004IdentityRegistry(identityRegistry_);
+        }
+        
+        if (reputationRegistry_ == address(0)) {
+            reputationRegistry = IERC8004ReputationRegistry(ERC8004Integration.SEPOLIA_REPUTATION_REGISTRY);
+        } else {
+            reputationRegistry = IERC8004ReputationRegistry(reputationRegistry_);
+        }
+        
+        // Default tags for Swarm routing
+        reputationTag1 = ERC8004Integration.TAG_SWARM_ROUTING;
+        reputationTag2 = "";
+        
+        // Start with enforcement disabled for easier onboarding
+        enforceIdentity = false;
+        enforceReputation = false;
     }
 
     receive() external payable {}
@@ -128,7 +143,14 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     }
 
     function setIdentityRegistry(address identityRegistry_) external onlyOwner {
-        identityRegistry = identityRegistry_;
+        identityRegistry = IERC8004IdentityRegistry(identityRegistry_);
+    }
+    
+    /// @notice Enable or disable identity and reputation enforcement
+    function setEnforcement(bool enforceIdentity_, bool enforceReputation_) external onlyOwner {
+        enforceIdentity = enforceIdentity_;
+        enforceReputation = enforceReputation_;
+        emit EnforcementUpdated(enforceIdentity_, enforceReputation_);
     }
 
     function registerAgent(address agent, uint256 agentId, bool active) external onlyOwner {
