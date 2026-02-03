@@ -5,3 +5,6 @@
 .env
 # Local planning
 plan.md
+
+broadcast/
+node_modules/
