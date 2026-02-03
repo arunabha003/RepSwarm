@@ -381,19 +381,24 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     }
 
     function _requireIdentity(address agent, uint256 agentId) internal view {
-        if (identityRegistry == address(0)) return;
-        IIdentityRegistry registry = IIdentityRegistry(identityRegistry);
-        address wallet = registry.getAgentWallet(agentId);
+        if (!enforceIdentity) return;
+        if (address(identityRegistry) == address(0)) return;
+        
+        address wallet = identityRegistry.getAgentWallet(agentId);
         if (wallet == agent) return;
-        if (!registry.isAuthorizedOrOwner(agent, agentId)) revert UnauthorizedAgent(agent);
+        if (!identityRegistry.isAuthorizedOrOwner(agent, agentId)) revert UnauthorizedAgent(agent);
     }
 
     function _requireReputation(uint256 agentId) internal view {
-        if (reputationRegistry == address(0)) return;
+        if (!enforceReputation) return;
+        if (address(reputationRegistry) == address(0)) return;
         if (reputationClients.length == 0) return;
+        
         (uint64 count, int128 value, uint8 decimals) =
-            IReputationRegistry(reputationRegistry).getSummary(agentId, reputationClients, reputationTag1, reputationTag2);
-        if (count == 0) revert ReputationTooLow(0, 0);
+            reputationRegistry.getSummary(agentId, reputationClients, reputationTag1, reputationTag2);
+        
+        // Allow new agents with no feedback
+        if (count == 0) return;
 
         int256 normalized = _normalize(value, decimals);
         if (normalized < minReputationWad) revert ReputationTooLow(value, decimals);
@@ -414,20 +419,52 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     /// @param agentId The agent's ERC-8004 identity ID
     /// @param value The feedback value (positive for good performance, negative for bad)
     function _giveFeedback(uint256 intentId, uint256 agentId, int128 value) internal {
-        if (reputationRegistry == address(0)) return;
+        if (address(reputationRegistry) == address(0)) return;
         if (agentId == 0) return;
 
-        try IReputationRegistry(reputationRegistry).giveFeedback(
+        try reputationRegistry.giveFeedback(
             agentId,
             value,
-            18, // 18 decimals (WAD format)
+            ERC8004Integration.REPUTATION_DECIMALS,
             reputationTag1,
-            reputationTag2
+            reputationTag2,
+            "", // endpoint
+            "", // feedbackURI
+            bytes32(0) // feedbackHash
         ) {
             emit FeedbackGiven(intentId, agentId, value);
         } catch {
             // Feedback is non-critical, don't revert the swap
             // Could emit an event here for monitoring
+        }
+    }
+    
+    /// @notice Get an agent's reputation summary
+    /// @param agentId The agent's ERC-8004 identity ID
+    /// @return count Number of feedbacks
+    /// @return reputationWad Average reputation in WAD format
+    function getAgentReputation(uint256 agentId) external view returns (uint64 count, int256 reputationWad) {
+        if (address(reputationRegistry) == address(0)) return (0, 0);
+        if (reputationClients.length == 0) {
+            // Try to get all clients
+            address[] memory clients = reputationRegistry.getClients(agentId);
+            if (clients.length == 0) return (0, 0);
+            
+            (count, int128 value, uint8 decimals) = reputationRegistry.getSummary(
+                agentId,
+                clients,
+                reputationTag1,
+                reputationTag2
+            );
+            reputationWad = _normalize(value, decimals);
+        } else {
+            (count, int128 value, uint8 decimals) = reputationRegistry.getSummary(
+                agentId,
+                reputationClients,
+                reputationTag1,
+                reputationTag2
+            );
+            reputationWad = _normalize(value, decimals);
         }
     }
 }
