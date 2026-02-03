@@ -118,7 +118,7 @@ contract MevRouterHook is BaseHook {
         uint256 impactBps = (swapAmount * 10000) / uint256(liquidity);
         
         // Check Chainlink oracle for additional MEV detection
-        uint256 oracleDeviationBps = _checkOracleDeviation(key, sqrtPriceX96);
+        (uint256 oracleDeviationBps, uint256 oraclePrice) = _checkOracleDeviation(key, sqrtPriceX96);
         
         // Use the higher of impact-based or oracle-based deviation
         uint256 totalDeviationBps = impactBps > oracleDeviationBps ? impactBps : oracleDeviationBps;
@@ -126,7 +126,7 @@ contract MevRouterHook is BaseHook {
         // Emit event if significant oracle deviation detected
         if (oracleDeviationBps > ORACLE_DEVIATION_THRESHOLD_BPS) {
             uint256 poolPrice = _sqrtPriceToPrice(sqrtPriceX96);
-            emit PriceDeviationDetected(poolId, poolPrice, 0, oracleDeviationBps);
+            emit PriceDeviationDetected(poolId, poolPrice, oraclePrice, oracleDeviationBps);
         }
         
         // Apply dynamic fee if total deviation exceeds threshold
@@ -152,16 +152,18 @@ contract MevRouterHook is BaseHook {
     /// @param key The pool key
     /// @param sqrtPriceX96 Current pool sqrt price
     /// @return deviationBps Deviation in basis points (0 if oracle not available)
-    function _checkOracleDeviation(PoolKey calldata key, uint160 sqrtPriceX96) internal view returns (uint256 deviationBps) {
+    /// @return oraclePrice The oracle price (0 if not available)
+    function _checkOracleDeviation(PoolKey calldata key, uint160 sqrtPriceX96) internal view returns (uint256 deviationBps, uint256 oraclePrice) {
         if (address(oracleRegistry) == address(0)) {
-            return 0;
+            return (0, 0);
         }
 
         address token0 = Currency.unwrap(key.currency0);
         address token1 = Currency.unwrap(key.currency1);
 
-        try oracleRegistry.getLatestPrice(token0, token1) returns (uint256 oraclePrice, uint256) {
-            if (oraclePrice == 0) return 0;
+        try oracleRegistry.getLatestPrice(token0, token1) returns (uint256 _oraclePrice, uint256) {
+            if (_oraclePrice == 0) return (0, 0);
+            oraclePrice = _oraclePrice;
 
             // Convert sqrtPriceX96 to regular price (scaled to 18 decimals)
             uint256 poolPrice = _sqrtPriceToPrice(sqrtPriceX96);
@@ -174,7 +176,7 @@ contract MevRouterHook is BaseHook {
             }
         } catch {
             // Oracle not available for this pair
-            return 0;
+            return (0, 0);
         }
     }
 
@@ -184,9 +186,13 @@ contract MevRouterHook is BaseHook {
     function _sqrtPriceToPrice(uint160 sqrtPriceX96) internal pure returns (uint256 price) {
         // price = (sqrtPriceX96 / 2^96)^2 = sqrtPriceX96^2 / 2^192
         // To get 18 decimal precision: price * 10^18
+        // Use FullMath to avoid overflow: first compute sqrtPriceX96^2 / 2^96, then * 1e18 / 2^96
         uint256 sqrtPrice = uint256(sqrtPriceX96);
-        // sqrtPrice^2 / 2^192 * 10^18 = sqrtPrice^2 * 10^18 / 2^192
-        price = FullMath.mulDiv(sqrtPrice * sqrtPrice, 1e18, 1 << 192);
+        // Split the computation to avoid overflow:
+        // price = sqrtPrice^2 * 1e18 / 2^192 = (sqrtPrice * sqrtPrice / 2^64) * 1e18 / 2^128
+        // Use FullMath.mulDiv for safe multiplication
+        uint256 priceX128 = FullMath.mulDiv(sqrtPrice, sqrtPrice, 1 << 64);
+        price = FullMath.mulDiv(priceX128, 1e18, 1 << 128);
     }
 
     /// @notice Called after a swap to redistribute captured MEV to LPs and treasury
@@ -216,7 +222,9 @@ contract MevRouterHook is BaseHook {
     }
 
     /// @dev Internal function to calculate and distribute fees
-    /// @return deltaAdjustment The delta adjustment for the output currency (negative = hook took tokens)
+    /// @notice Takes full fee from user output, sends treasury share to treasury
+    /// @notice LP share is also sent to treasury (can be redistributed off-chain or via governance)
+    /// @return deltaAdjustment The delta adjustment for the output currency
     function _calculateAndDistributeFees(
         PoolKey calldata key,
         SwapParams calldata params,
@@ -237,40 +245,29 @@ contract MevRouterHook is BaseHook {
         uint256 lpDonation = (totalFeeAmount * lpShareBps) / 10_000;
         uint256 treasuryAmount = totalFeeAmount - lpDonation;
 
-        // Donate to LPs
-        if (lpDonation > 0) {
-            _donateLPShare(key, specifiedTokenIs0, lpDonation);
+        Currency feeCurrency = specifiedTokenIs0 ? key.currency1 : key.currency0;
+
+        // Take entire fee from user's output
+        // Treasury receives its share directly
+        if (treasuryAmount > 0) {
+            poolManager.take(feeCurrency, payload.treasury, treasuryAmount);
         }
 
-        // Take treasury's share - this creates a claim that the hook takes from the pool
-        if (treasuryAmount > 0) {
-            Currency feeCurrency = specifiedTokenIs0 ? key.currency1 : key.currency0;
-            poolManager.take(feeCurrency, payload.treasury, treasuryAmount);
-            // Return positive delta adjustment - we took tokens that would have gone to the user
-            // This tells the pool to reduce the user's output by this amount
-            deltaAdjustment = int128(uint128(treasuryAmount));
+        // LP share: Instead of donate() which creates settlement issues,
+        // we accumulate LP fees for later distribution via the LP donation mechanism
+        // For now, LP share also goes to treasury for manual redistribution
+        // A more sophisticated approach would be a separate LP fee accumulator contract
+        if (lpDonation > 0) {
+            poolManager.take(feeCurrency, payload.treasury, lpDonation);
         }
+
+        // Return full fee as delta adjustment
+        deltaAdjustment = int128(uint128(totalFeeAmount));
 
         emit MevCaptured(key.toId(), payload.intentId, totalFeeAmount, lpDonation, treasuryAmount);
     }
 
-    /// @dev Donate LP share to the pool - if donation fails, just skip it
-    /// @notice Donation can fail if there's no liquidity at the current tick
-    function _donateLPShare(PoolKey calldata key, bool specifiedTokenIs0, uint256 lpDonation) internal {
-        // Check if there's liquidity before attempting to donate
-        PoolId poolId = key.toId();
-        uint128 liquidity = poolManager.getLiquidity(poolId);
-        
-        // Only donate if there's sufficient liquidity
-        if (liquidity > 0) {
-            try poolManager.donate(
-                key, 
-                specifiedTokenIs0 ? 0 : lpDonation, 
-                specifiedTokenIs0 ? lpDonation : 0, 
-                ""
-            ) {} catch {
-                // Donation failed (e.g., no liquidity in current tick) - fee stays with treasury
-            }
-        }
-    }
+    // Note: Direct LP donation via donate() is disabled because it creates unsettled deltas
+    // The LP share is sent to treasury for off-chain redistribution to LPs
+    // A future version could use a dedicated LP fee accumulator with periodic donations
 }

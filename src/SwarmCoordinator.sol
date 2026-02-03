@@ -143,7 +143,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         if (params.deadline != 0 && block.timestamp > params.deadline) {
             revert DeadlinePassed(params.deadline);
         }
-        if (candidatePaths.length == 0) revert NoCandidates();
+        if (candidatePaths.length == 0) revert ISwarmCoordinator.NoCandidates();
         if (params.treasuryBps > 10_000) revert InvalidBps(params.treasuryBps);
         if (params.mevFeeBps > 10_000) revert InvalidBps(params.mevFeeBps);
         if (params.lpShareBps > 10_000) revert InvalidBps(params.lpShareBps);
@@ -174,7 +174,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         override
     {
         SwarmTypes.Intent storage intent = intents[intentId];
-        if (intent.executed) revert IntentAlreadyExecuted(intentId);
+        if (intent.executed) revert ISwarmCoordinator.IntentAlreadyExecuted(intentId);
         if (intent.deadline != 0 && block.timestamp > intent.deadline) revert DeadlinePassed(intent.deadline);
         if (candidateId >= intentCandidates[intentId].length) revert InvalidCandidate(candidateId);
 
@@ -201,7 +201,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
 
     function executeIntent(uint256 intentId) external payable isNotLocked {
         SwarmTypes.Intent storage intent = intents[intentId];
-        if (intent.executed) revert IntentAlreadyExecuted(intentId);
+        if (intent.executed) revert ISwarmCoordinator.IntentAlreadyExecuted(intentId);
         if (intent.deadline != 0 && block.timestamp > intent.deadline) revert DeadlinePassed(intent.deadline);
 
         (uint256 candidateId, uint256 agentId) = _selectBestCandidate(intentId);
@@ -254,7 +254,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         intent.executed = true;
         
         // Give positive feedback to the winning agent via ERC-8004
-        _giveFeedback(agentId, int128(int256(1e18))); // +1 WAD for successful execution
+        _giveFeedback(intentId, agentId, int128(int256(1e18))); // +1 WAD for successful execution
 
         emit IntentExecuted(intentId, msg.sender, candidateId, agentId);
     }
@@ -317,7 +317,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         if (agentsList.length == 0) revert NoProposals(intentId);
 
         uint256 candidateCount = intentCandidates[intentId].length;
-        if (candidateCount == 0) revert NoCandidates();
+        if (candidateCount == 0) revert ISwarmCoordinator.NoCandidates();
 
         bool hasBest;
         int256 bestScore;
@@ -343,15 +343,17 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             }
         }
 
-        if (!hasBest) revert NoProposals(intentId);
+        if (!hasBest) revert ISwarmCoordinator.NoProposals(intentId);
     }
 
     function _validatePath(Currency currencyIn, Currency currencyOut, PathKey[] memory path) internal pure {
         Currency current = currencyIn;
         for (uint256 i = 0; i < path.length; i++) {
-            // Validate the path step creates a valid pool direction
-            // The intermediate currency becomes input for next hop
-            current = path[i].intermediateCurrency;
+            // Validate the intermediate currency is different from current
+            // This ensures we're actually swapping between different tokens
+            Currency next = path[i].intermediateCurrency;
+            if (Currency.unwrap(current) == Currency.unwrap(next)) revert InvalidPath();
+            current = next;
         }
         if (Currency.unwrap(current) != Currency.unwrap(currencyOut)) revert InvalidPath();
     }
@@ -386,9 +388,10 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     }
 
     /// @notice Give feedback to an agent via ERC-8004 ReputationRegistry
+    /// @param intentId The intent that was executed
     /// @param agentId The agent's ERC-8004 identity ID
     /// @param value The feedback value (positive for good performance, negative for bad)
-    function _giveFeedback(uint256 agentId, int128 value) internal {
+    function _giveFeedback(uint256 intentId, uint256 agentId, int128 value) internal {
         if (reputationRegistry == address(0)) return;
         if (agentId == 0) return;
 
@@ -399,7 +402,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             reputationTag1,
             reputationTag2
         ) {
-            emit FeedbackGiven(0, agentId, value);
+            emit FeedbackGiven(intentId, agentId, value);
         } catch {
             // Feedback is non-critical, don't revert the swap
             // Could emit an event here for monitoring
