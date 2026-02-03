@@ -127,7 +127,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         string calldata tag2,
         int256 minReputationWad_
     ) external onlyOwner {
-        reputationRegistry = reputationRegistry_;
+        reputationRegistry = IERC8004ReputationRegistry(reputationRegistry_);
         reputationTag1 = tag1;
         reputationTag2 = tag2;
         minReputationWad = minReputationWad_;
@@ -450,7 +450,9 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             address[] memory clients = reputationRegistry.getClients(agentId);
             if (clients.length == 0) return (0, 0);
             
-            (count, int128 value, uint8 decimals) = reputationRegistry.getSummary(
+            int128 value;
+            uint8 decimals;
+            (count, value, decimals) = reputationRegistry.getSummary(
                 agentId,
                 clients,
                 reputationTag1,
@@ -458,7 +460,9 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             );
             reputationWad = _normalize(value, decimals);
         } else {
-            (count, int128 value, uint8 decimals) = reputationRegistry.getSummary(
+            int128 value;
+            uint8 decimals;
+            (count, value, decimals) = reputationRegistry.getSummary(
                 agentId,
                 reputationClients,
                 reputationTag1,
