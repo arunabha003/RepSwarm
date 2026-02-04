@@ -23,6 +23,7 @@ import {IOracleRegistry} from "../interfaces/IChainlinkOracle.sol";
 import {ArbitrageLib} from "../libraries/ArbitrageLib.sol";
 import {HookLib} from "../libraries/HookLib.sol";
 import {LPFeeAccumulator} from "../LPFeeAccumulator.sol";
+import {AgentProposalRegistry} from "../agents/AgentProposalRegistry.sol";
 
 /// @title MevRouterHookV2
 /// @notice Production-grade MEV detection and redistribution hook with REAL backrunning
@@ -82,6 +83,12 @@ contract MevRouterHookV2 is BaseHook {
     /// @notice Whether backrunning is enabled
     bool public backrunEnabled;
 
+    /// @notice Agent proposal registry for REAL agent participation
+    AgentProposalRegistry public agentRegistry;
+
+    /// @notice Whether to use agent recommendations for fee/MEV decisions
+    bool public useAgentRecommendations;
+
     // ============ Events ============
 
     event ArbitrageCaptured(
@@ -113,6 +120,15 @@ contract MevRouterHookV2 is BaseHook {
     event LPFeeAccumulatorSet(address accumulator);
     
     event BackrunToggled(bool enabled);
+
+    event AgentRegistrySet(address registry);
+    
+    event AgentRecommendationUsed(
+        PoolId indexed poolId,
+        uint24 agentFee,
+        uint256 mevRisk,
+        uint256 agentCount
+    );
 
     // ============ Errors ============
 
@@ -219,10 +235,34 @@ contract MevRouterHookV2 is BaseHook {
 
         // If should interfere, capture MEV
         if (result.shouldInterfere && result.hookShare > 0) {
-            return _executeArbitrageCapture(key, params, result.hookShare, result.arbitrageOpportunity);
+            // CRITICAL: Cap hook share to not exceed swap amount (prevents HookDeltaExceedsSwapAmount)
+            uint256 cappedHookShare = result.hookShare > swapAmount ? swapAmount : result.hookShare;
+            // Apply a max capture ratio (e.g., 50% of swap) to be safe
+            uint256 maxCapture = swapAmount / 2;
+            if (cappedHookShare > maxCapture) {
+                cappedHookShare = maxCapture;
+            }
+            return _executeArbitrageCapture(key, params, cappedHookShare, result.arbitrageOpportunity);
         }
 
-        // No arbitrage opportunity - check if hookData has custom fee
+        // No arbitrage opportunity - check agent recommendations first
+        if (useAgentRecommendations && address(agentRegistry) != address(0)) {
+            (bool hasCoverage, uint256 agentCount) = agentRegistry.hasAgentCoverage(poolId);
+            if (hasCoverage && agentCount > 0) {
+                uint24 agentFee = agentRegistry.getAgentConsensusFee(poolId);
+                uint256 mevRisk = agentRegistry.getAgentMevRisk(poolId);
+                
+                if (agentFee > 0) {
+                    emit AgentRecommendationUsed(poolId, agentFee, mevRisk, agentCount);
+                    
+                    // Apply agent-recommended fee with override flag
+                    uint24 overrideFee = agentFee | LPFeeLibrary.OVERRIDE_FEE_FLAG;
+                    return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, overrideFee);
+                }
+            }
+        }
+        
+        // Fallback: check if hookData has custom fee
         if (hookData.length > 0) {
             SwarmHookData.Payload memory payload = SwarmHookData.decode(hookData);
             if (payload.mevFee > 0) {
@@ -455,6 +495,17 @@ contract MevRouterHookV2 is BaseHook {
     function setBackrunEnabled(bool _enabled) external onlyOwner {
         backrunEnabled = _enabled;
         emit BackrunToggled(_enabled);
+    }
+
+    /// @notice Set the agent proposal registry for REAL agent participation
+    function setAgentRegistry(address _registry) external onlyOwner {
+        agentRegistry = AgentProposalRegistry(_registry);
+        emit AgentRegistrySet(_registry);
+    }
+
+    /// @notice Toggle whether to use agent recommendations
+    function setUseAgentRecommendations(bool _use) external onlyOwner {
+        useAgentRecommendations = _use;
     }
 
     // ============ View Functions ============

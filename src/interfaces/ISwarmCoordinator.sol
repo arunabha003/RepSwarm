@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {SwarmTypes} from "../libraries/SwarmTypes.sol";
 
 interface ISwarmCoordinator {
     struct IntentView {
@@ -30,10 +31,13 @@ interface ISwarmCoordinator {
     error AgentNotApproved();
     error AlreadyProposed();
 
+    function createIntent(SwarmTypes.IntentParams calldata params, bytes[] calldata candidatePaths) external returns (uint256 intentId);
     function getIntent(uint256 intentId) external view returns (IntentView memory);
     function getCandidateCount(uint256 intentId) external view returns (uint256);
     function getCandidatePath(uint256 intentId, uint256 candidateId) external view returns (bytes memory);
     function getAgentInfo(address agent) external view returns (AgentInfo memory);
     function getProposalAgents(uint256 intentId) external view returns (address[] memory);
     function submitProposal(uint256 intentId, uint256 candidateId, int256 score, bytes calldata data) external;
+    function nextIntentId() external view returns (uint256);
+    function executeIntent(uint256 intentId) external payable;
 }
