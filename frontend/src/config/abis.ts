@@ -9,9 +9,9 @@ export const SWARM_COORDINATOR_ABI = [
         components: [
           { name: 'currencyIn', type: 'address' },
           { name: 'currencyOut', type: 'address' },
-          { name: 'amountIn', type: 'uint256' },
-          { name: 'amountOutMin', type: 'uint256' },
-          { name: 'deadline', type: 'uint256' },
+          { name: 'amountIn', type: 'uint128' },
+          { name: 'amountOutMin', type: 'uint128' },
+          { name: 'deadline', type: 'uint64' },
           { name: 'mevFeeBps', type: 'uint16' },
           { name: 'treasuryBps', type: 'uint16' },
           { name: 'lpShareBps', type: 'uint16' },
@@ -733,6 +733,82 @@ export const CHAINLINK_AGGREGATOR_ABI = [
     inputs: [],
     name: 'description',
     outputs: [{ name: '', type: 'string' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+] as const;
+
+// ========================================
+// POOL SWAP TEST ABI (Uniswap V4)
+// ========================================
+export const POOL_SWAP_TEST_ABI = [
+  {
+    inputs: [
+      {
+        components: [
+          { name: 'currency0', type: 'address' },
+          { name: 'currency1', type: 'address' },
+          { name: 'fee', type: 'uint24' },
+          { name: 'tickSpacing', type: 'int24' },
+          { name: 'hooks', type: 'address' },
+        ],
+        name: 'key',
+        type: 'tuple',
+      },
+      {
+        components: [
+          { name: 'zeroForOne', type: 'bool' },
+          { name: 'amountSpecified', type: 'int256' },
+          { name: 'sqrtPriceLimitX96', type: 'uint160' },
+        ],
+        name: 'params',
+        type: 'tuple',
+      },
+      {
+        components: [
+          { name: 'takeClaims', type: 'bool' },
+          { name: 'settleUsingBurn', type: 'bool' },
+        ],
+        name: 'testSettings',
+        type: 'tuple',
+      },
+      { name: 'hookData', type: 'bytes' },
+    ],
+    name: 'swap',
+    outputs: [
+      {
+        components: [
+          { name: 'amount0', type: 'int128' },
+          { name: 'amount1', type: 'int128' },
+        ],
+        name: 'delta',
+        type: 'tuple',
+      },
+    ],
+    stateMutability: 'payable',
+    type: 'function',
+  },
+] as const;
+// ========================================
+// POOL MANAGER ABI (for reading pool state)
+// ========================================
+export const POOL_MANAGER_ABI = [
+  {
+    inputs: [{ name: 'id', type: 'bytes32' }],
+    name: 'getSlot0',
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'protocolFee', type: 'uint24' },
+      { name: 'lpFee', type: 'uint24' },
+    ],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [{ name: 'id', type: 'bytes32' }],
+    name: 'getLiquidity',
+    outputs: [{ name: 'liquidity', type: 'uint128' }],
     stateMutability: 'view',
     type: 'function',
   },

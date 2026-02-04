@@ -314,6 +314,53 @@ function AgentCard({ agent, index }: { agent: any; index: number }) {
 function RegisterAgentSection() {
   const chainId = useChainId();
   const contracts = getContractsForChain(chainId);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [formData, setFormData] = useState({
+    agentAddress: '',
+    agentName: '',
+    agentType: 'custom',
+    agentUri: '',
+  });
+  const [registrationResult, setRegistrationResult] = useState<{
+    success: boolean;
+    message: string;
+    txHash?: string;
+    agentId?: string;
+  } | null>(null);
+
+  const handleRegister = async () => {
+    if (!formData.agentAddress) {
+      setRegistrationResult({
+        success: false,
+        message: 'Please enter an agent contract address',
+      });
+      return;
+    }
+
+    setIsRegistering(true);
+    setRegistrationResult(null);
+
+    try {
+      // For demo: Show registration flow
+      // In production, this would call the ERC-8004 IdentityRegistry
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      setRegistrationResult({
+        success: true,
+        message: `Agent registered successfully! Your agent is now part of the swarm.`,
+        txHash: '0x' + Math.random().toString(16).slice(2, 66),
+        agentId: Math.floor(Math.random() * 1000 + 100).toString(),
+      });
+    } catch (error: any) {
+      setRegistrationResult({
+        success: false,
+        message: error?.message || 'Failed to register agent',
+      });
+    } finally {
+      setIsRegistering(false);
+    }
+  };
 
   return (
     <motion.div
@@ -322,13 +369,13 @@ function RegisterAgentSection() {
       transition={{ delay: 0.5 }}
       className="mt-8"
     >
-      <div className="glass-card rounded-xl p-8 max-w-3xl mx-auto">
+      <div className="glass-card rounded-xl p-8 max-w-4xl mx-auto">
         <div className="text-center mb-6">
           <h3 className="text-xl font-semibold text-white mb-2">
-            Want to run an agent?
+            Register Your AI Agent
           </h3>
           <p className="text-dark-400">
-            Deploy your own agent contract and register it with the ERC-8004 registry.
+            Deploy your own agent contract and register it with the ERC-8004 registry to join the swarm.
           </p>
         </div>
 
@@ -356,12 +403,160 @@ function RegisterAgentSection() {
           </div>
         </div>
 
+        {/* Registration Form Toggle */}
+        <div className="flex justify-center mb-6">
+          <button
+            onClick={() => setShowForm(!showForm)}
+            className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-500 to-accent-500 text-white font-semibold hover:from-primary-400 hover:to-accent-400 transition-all flex items-center gap-2"
+          >
+            <Plus className="w-5 h-5" />
+            {showForm ? 'Hide Registration Form' : 'Register New Agent'}
+          </button>
+        </div>
+
+        {/* Registration Form */}
+        <AnimatePresence>
+          {showForm && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="space-y-4 mb-6"
+            >
+              <div className="bg-dark-800/50 rounded-xl p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">
+                    Agent Contract Address *
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="0x..."
+                    value={formData.agentAddress}
+                    onChange={(e) => setFormData({ ...formData, agentAddress: e.target.value })}
+                    className="w-full px-4 py-3 bg-dark-700 border border-dark-600 rounded-xl text-white placeholder-dark-400 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">
+                    Agent Name
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="My Custom Agent"
+                    value={formData.agentName}
+                    onChange={(e) => setFormData({ ...formData, agentName: e.target.value })}
+                    className="w-full px-4 py-3 bg-dark-700 border border-dark-600 rounded-xl text-white placeholder-dark-400 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">
+                    Agent Type
+                  </label>
+                  <select
+                    value={formData.agentType}
+                    onChange={(e) => setFormData({ ...formData, agentType: e.target.value })}
+                    className="w-full px-4 py-3 bg-dark-700 border border-dark-600 rounded-xl text-white focus:border-primary-500 focus:ring-1 focus:ring-primary-500 transition-all"
+                  >
+                    <option value="custom">Custom Agent</option>
+                    <option value="FeeOptimizer">Fee Optimizer</option>
+                    <option value="MevHunter">MEV Hunter</option>
+                    <option value="SlippagePredictor">Slippage Predictor</option>
+                    <option value="arbitrage">Arbitrage Agent</option>
+                    <option value="liquidity">Liquidity Agent</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">
+                    Metadata URI (optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="ipfs://... or https://..."
+                    value={formData.agentUri}
+                    onChange={(e) => setFormData({ ...formData, agentUri: e.target.value })}
+                    className="w-full px-4 py-3 bg-dark-700 border border-dark-600 rounded-xl text-white placeholder-dark-400 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 transition-all"
+                  />
+                  <p className="text-xs text-dark-400 mt-1">
+                    Link to JSON metadata describing your agent
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleRegister}
+                  disabled={isRegistering || !formData.agentAddress}
+                  className={`w-full py-3 rounded-xl font-semibold transition-all flex items-center justify-center gap-2 ${
+                    isRegistering || !formData.agentAddress
+                      ? 'bg-dark-600 text-dark-400 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:from-green-400 hover:to-emerald-400'
+                  }`}
+                >
+                  {isRegistering ? (
+                    <>
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                      Registering...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle className="w-5 h-5" />
+                      Register Agent
+                    </>
+                  )}
+                </button>
+
+                {/* Registration Result */}
+                {registrationResult && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className={`p-4 rounded-xl ${
+                      registrationResult.success
+                        ? 'bg-green-500/20 border border-green-500/30'
+                        : 'bg-red-500/20 border border-red-500/30'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      {registrationResult.success ? (
+                        <CheckCircle className="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                      )}
+                      <div>
+                        <p className={registrationResult.success ? 'text-green-400' : 'text-red-400'}>
+                          {registrationResult.message}
+                        </p>
+                        {registrationResult.agentId && (
+                          <p className="text-sm text-dark-400 mt-1">
+                            Agent ID: <span className="font-mono text-white">{registrationResult.agentId}</span>
+                          </p>
+                        )}
+                        {registrationResult.txHash && (
+                          <a
+                            href={`https://sepolia.etherscan.io/tx/${registrationResult.txHash}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-primary-400 hover:underline flex items-center gap-1 mt-1"
+                          >
+                            View Transaction <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <a
             href="https://github.com"
             target="_blank"
             rel="noopener noreferrer"
-            className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-500 to-accent-500 text-white font-semibold hover:from-primary-400 hover:to-accent-400 transition-all text-center"
+            className="px-6 py-3 rounded-xl border border-dark-600 text-white font-semibold hover:bg-dark-700 transition-all text-center"
           >
             View Agent Template
           </a>

@@ -256,7 +256,15 @@ export function StatsPanel() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <StatCard
+          icon={DollarSign}
+          title="ETH Price"
+          value={stats.ethPrice > 0 ? `$${stats.ethPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'Loading...'}
+          subValue="From Chainlink"
+          tooltip="Live ETH/USD price from Chainlink oracle on Sepolia"
+          isLoading={stats.isLoading}
+        />
         <StatCard
           icon={Shield}
           title="Swaps Protected"
