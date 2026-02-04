@@ -139,6 +139,28 @@ forge install
 forge build
 ```
 
+### Local Testing (Anvil Fork)
+
+For detailed instructions, see [ETH_SEPOLIA_DEPLOYMENT.md](./ETH_SEPOLIA_DEPLOYMENT.md).
+
+**Quick Start:**
+```bash
+# 1. Start Anvil (in one terminal)
+anvil --fork-url https://eth-sepolia.g.alchemy.com/v2/KywLaq2zlVzePOhip0BY3U8ztfHkYDmo --chain-id 31337 --auto-impersonate
+
+# 2. Deploy contracts (in another terminal)
+forge script script/DeployEthSepoliaComplete.s.sol:DeployEthSepoliaComplete --rpc-url http://127.0.0.1:8545 --broadcast
+
+# 3. Mint USDC and add liquidity
+SLOT=$(cast keccak256 $(cast abi-encode "f(address,uint256)" 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 0))
+cast rpc anvil_setStorageAt 0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8 $SLOT 0x00000000000000000000000000000000000000000000d3c21bcecceda1000000 --rpc-url http://127.0.0.1:8545
+cast send 0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8 "approve(address,uint256)" 0x1A9a6FABC4412dd3f829a1be122Ff0A081a2412b 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff --rpc-url http://127.0.0.1:8545 --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+cast send 0x1A9a6FABC4412dd3f829a1be122Ff0A081a2412b "modifyLiquidity((address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)" "(0x0000000000000000000000000000000000000000,0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8,500,10,0x115e0e9E6A7B475E883e1f9723dc4C082f0640Cc)" "(72240,84240,1000000000000000000,0x0000000000000000000000000000000000000000000000000000000000000000)" "0x" --value 200ether --rpc-url http://127.0.0.1:8545 --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+
+# 4. Start frontend
+cd frontend && npm install && npm run dev
+```
+
 ### Run Tests
 
 ```bash
@@ -152,7 +174,7 @@ forge test --match-path "test/MevIntegration.t.sol" -vv
 ALCHEMY_SEPOLIA_RPC_URL=your_url forge test --match-path "test/SepoliaFork.t.sol" -vv
 ```
 
-### Deploy to Sepolia
+### Deploy to Live Sepolia
 
 ```bash
 # Set environment variables
@@ -182,16 +204,19 @@ cp .env.example .env.local
 npm run dev
 ```
 
-## Contract Addresses (Sepolia)
+## Contract Addresses (Anvil Fork)
 
 ### Core Contracts
 | Contract | Address |
 |----------|---------|
-| MevRouterHookV2 | `TBD` |
-| LPFeeAccumulator | `TBD` |
-| SwarmCoordinator | `TBD` |
-| OracleRegistry | `TBD` |
-| FlashLoanBackrunner | `TBD` |
+| PoolManager | `0xE03A1074c86CFeDd5C142C4F04F1a1536e203543` |
+| PoolSwapTest | `0x9B6b46e2c869aa39918Db7f52f5557FE577B6eEe` |
+| PoolModifyLiquidityTest | `0x1A9a6FABC4412dd3f829a1be122Ff0A081a2412b` |
+| MevRouterHookV2 | `0x115e0e9E6A7B475E883e1f9723dc4C082f0640Cc` |
+| LPFeeAccumulator | `0xc1ec8B65bb137602963f88eb063fa7236f4744f2` |
+| SwarmCoordinator | `0x79cA020FeE712048cAA49De800B4606cC516A331` |
+| OracleRegistry | `0x7A1efaf375798B6B0df2BE94CF8A13F68c9E74eE` |
+| FlashLoanBackrunner | `0xd91d0433c10291448a8DC00C3ba14Af8b94c7656` |
 
 ### ERC-8004 Registries (Official)
 | Registry | Address |
@@ -200,12 +225,12 @@ npm run dev
 | Reputation Registry | `0x8004B663056A597Dffe9eCcC1965A193B7388713` |
 
 ### Swarm Agents
-| Agent | Address | ERC-8004 ID |
-|-------|---------|-------------|
-| SwarmAgentRegistry | `TBD` | - |
-| FeeOptimizerAgent | `TBD` | `TBD` |
-| MevHunterAgent | `TBD` | `TBD` |
-| SlippagePredictorAgent | `TBD` | `TBD` |
+| Agent | Address |
+|-------|---------|
+| AgentRegistry | `0x26c13B3900bf570d9830678D2e22C439778627EA` |
+| FeeOptimizerAgent | `0xae6D0f561c4907D211Ed69cBCc2fd0A0e03A2AaE` |
+| MevHunterAgent | `0x95Ce3FE31BB597AD6aAc2639a03ca8f24741b508` |
+| SlippagePredictorAgent | `0x3440e175a85aa6CD595e9E8b05c515ac546FB91c` |
 
 ## Configuration
 
