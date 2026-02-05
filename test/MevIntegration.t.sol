@@ -104,18 +104,21 @@ contract MevIntegrationTest is Test {
         // Deploy agents
         arbAgent = new ArbitrageAgent(
             poolManager,
-            IOracleRegistry(address(oracleRegistry))
+            address(this),
+            8000, // 80% hook share
+            50    // 0.5% min divergence
         );
 
         feeAgent = new DynamicFeeAgent(
             poolManager,
-            IOracleRegistry(address(oracleRegistry))
+            address(this)
         );
 
         backrunAgent = new BackrunAgent(
             poolManager,
-            lpAccumulator
+            address(this)
         );
+        backrunAgent.setLPFeeAccumulator(address(lpAccumulator));
 
         // Deploy executor
         executor = new AgentExecutor();
@@ -130,9 +133,6 @@ contract MevIntegrationTest is Test {
 
         // Configure LP accumulator
         lpAccumulator.setHookAuthorization(address(hook), true);
-
-        // Link hook to accumulator
-        hook.setLPFeeAccumulator(address(lpAccumulator));
 
         // Authorize callers
         arbAgent.authorizeCaller(address(hook), true);
@@ -157,14 +157,11 @@ contract MevIntegrationTest is Test {
         uint160 flags = uint160(
             Hooks.BEFORE_SWAP_FLAG | 
             Hooks.AFTER_SWAP_FLAG | 
-            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
-            Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
         );
 
         bytes memory constructorArgs = abi.encode(
             poolManager, 
-            address(executor),
-            IOracleRegistry(address(oracleRegistry)),
             address(this)
         );
 
@@ -185,6 +182,14 @@ contract MevIntegrationTest is Test {
         require(deployedAddress == hookAddress, "Hook address mismatch");
 
         hook = SwarmHook(payable(deployedAddress));
+        
+        // Configure hook with agents
+        hook.setAgentExecutor(address(executor));
+        hook.setOracleRegistry(address(oracleRegistry));
+        hook.setLPFeeAccumulator(address(lpAccumulator));
+        
+        // Authorize hook in executor
+        executor.authorizeHook(address(hook), true);
     }
 
     function _initPoolAndLiquidity() internal {
@@ -204,6 +209,10 @@ contract MevIntegrationTest is Test {
 
         // Initialize pool
         poolManager.initialize(poolKey, SQRT_PRICE_1_1);
+
+        // Mint tokens for liquidity
+        tokenA.mint(address(this), 10000 ether);
+        tokenB.mint(address(this), 10000 ether);
 
         // Add initial liquidity
         tokenA.approve(address(liquidityRouter), type(uint256).max);
@@ -318,7 +327,9 @@ contract MevIntegrationTest is Test {
         // Deploy new arbitrage agent
         ArbitrageAgent newArbAgent = new ArbitrageAgent(
             poolManager,
-            IOracleRegistry(address(oracleRegistry))
+            address(this),
+            8000, // 80% hook share
+            50    // 0.5% min divergence
         );
         
         // Hot-swap the agent
