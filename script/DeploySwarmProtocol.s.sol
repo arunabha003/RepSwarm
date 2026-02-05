@@ -20,6 +20,7 @@ import {LPFeeAccumulator} from "../src/LPFeeAccumulator.sol";
 import {OracleRegistry} from "../src/oracles/OracleRegistry.sol";
 import {SwarmCoordinator} from "../src/SwarmCoordinator.sol";
 import {ISwarmAgent, AgentType} from "../src/interfaces/ISwarmAgent.sol";
+import {FlashLoanBackrunner} from "../src/backrun/FlashLoanBackrunner.sol";
 
 /// @title DeploySwarmProtocol
 /// @notice Deploys the complete agent-driven Swarm protocol
@@ -40,6 +41,7 @@ contract DeploySwarmProtocol is Script {
     ArbitrageAgent public arbitrageAgent;
     DynamicFeeAgent public dynamicFeeAgent;
     BackrunAgent public backrunAgent;
+    FlashLoanBackrunner public flashBackrunner;
     LPFeeAccumulator public lpFeeAccumulator;
     OracleRegistry public oracleRegistry;
 
@@ -103,6 +105,14 @@ contract DeploySwarmProtocol is Script {
         );
         console.log("   Backrun Agent:", address(backrunAgent));
 
+        // 5b. Deploy Flash Loan Backrunner (executor)
+        console.log("\n5b. Deploying FlashLoanBackrunner...");
+        flashBackrunner = new FlashLoanBackrunner(
+            IPoolManager(POOL_MANAGER),
+            address(0) // default to Aave Sepolia inside contract
+        );
+        console.log("   FlashLoanBackrunner:", address(flashBackrunner));
+
         // 6. Configure Agent Executor
         console.log("\n6. Configuring Agent Executor...");
         
@@ -121,6 +131,7 @@ contract DeploySwarmProtocol is Script {
         hook.setAgentExecutor(address(agentExecutor));
         hook.setOracleRegistry(address(oracleRegistry));
         hook.setLPFeeAccumulator(address(lpFeeAccumulator));
+        hook.setBackrunRecorder(address(flashBackrunner));
         console.log("   Hook configured");
 
         // 8. Configure Agents
@@ -133,9 +144,16 @@ contract DeploySwarmProtocol is Script {
         
         // Set LP accumulator in backrun agent
         backrunAgent.setLPFeeAccumulator(address(lpFeeAccumulator));
+        backrunAgent.setFlashBackrunner(address(flashBackrunner));
         
         // Authorize hook in LP accumulator
         lpFeeAccumulator.setHookAuthorization(address(hook), true);
+        lpFeeAccumulator.setHookAuthorization(address(flashBackrunner), true);
+
+        // Configure flash backrunner
+        flashBackrunner.setLPFeeAccumulator(address(lpFeeAccumulator));
+        flashBackrunner.setRecorderAuthorization(address(hook), true);
+        flashBackrunner.setForwarderAuthorization(address(backrunAgent), true);
         
         console.log("   Agents configured");
 
@@ -150,7 +168,8 @@ contract DeploySwarmProtocol is Script {
         uint160 flags = uint160(
             Hooks.BEFORE_SWAP_FLAG |
             Hooks.AFTER_SWAP_FLAG |
-            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
+            Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
 
         // Mine for address with correct flags

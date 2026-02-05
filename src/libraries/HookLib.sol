@@ -84,11 +84,10 @@ library HookLib {
     function sqrtPriceToPrice(uint160 sqrtPriceX96) internal pure returns (uint256 price) {
         if (sqrtPriceX96 == 0) return 0;
         
-        // price = (sqrtPriceX96 / 2^96)^2 * 10^18
-        // = sqrtPriceX96^2 * 10^18 / 2^192
-        uint256 sqrtPrice = uint256(sqrtPriceX96);
-        uint256 priceX192 = sqrtPrice * sqrtPrice;
-        price = FullMath.mulDiv(priceX192, PRICE_PRECISION, 1 << 192);
+        // price(1e18) = (sqrtPriceX96^2 / 2^192) * 1e18
+        // Multiply by 1e18 before dividing so we don't lose precision for prices < 1.
+        uint256 scaledB = uint256(sqrtPriceX96) * PRICE_PRECISION;
+        price = FullMath.mulDiv(uint256(sqrtPriceX96), scaledB, 1 << 192);
     }
 
     /// @notice Convert human-readable price to sqrt price

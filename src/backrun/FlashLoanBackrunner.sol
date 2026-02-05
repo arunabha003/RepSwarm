@@ -16,6 +16,7 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 
 import {LPFeeAccumulator} from "../LPFeeAccumulator.sol";
+import {HookLib} from "../libraries/HookLib.sol";
 
 /// @title IFlashLoanSimpleReceiver
 /// @notice Aave V3 Flash Loan interface
@@ -83,12 +84,26 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
     
     /// @notice Authorized keepers who can trigger backruns
     mapping(address => bool) public authorizedKeepers;
+
+    /// @notice Authorized recorders who can post opportunities (e.g., the hook)
+    mapping(address => bool) public authorizedRecorders;
+
+    /// @notice Authorized forwarders who can execute backruns on behalf of a keeper (e.g., BackrunAgent)
+    mapping(address => bool) public authorizedForwarders;
     
     /// @notice Pending backrun opportunities per pool
     mapping(PoolId => BackrunOpportunity) public pendingBackruns;
+
+    /// @notice Repay pool per pool (used to swap output back into borrowed asset)
+    /// @dev In production this would typically be a deep-liquidity pool without the hook, or another venue.
+    mapping(PoolId => PoolKey) public repayPoolKeys;
+    mapping(PoolId => bool) public repayPoolKeySet;
     
     /// @notice Total profits captured per pool
     mapping(PoolId => uint256) public totalProfits;
+
+    /// @notice Maximum opportunity age in blocks
+    uint256 public maxOpportunityAgeBlocks = 2;
 
     // ============ Structs ============
     
@@ -99,11 +114,13 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         uint256 backrunAmount;    // Calculated optimal backrun amount
         bool zeroForOne;          // Direction of backrun
         uint64 timestamp;         // When opportunity was detected
+        uint64 blockNumber;       // Block number when detected (used for age/expiry checks)
         bool executed;
     }
     
     struct FlashLoanParams {
         PoolKey poolKey;
+        PoolKey repayPoolKey;
         bool zeroForOne;
         uint256 minProfit;
         address profitRecipient;
@@ -128,6 +145,8 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
     );
     
     event KeeperAuthorized(address indexed keeper, bool authorized);
+    event RecorderAuthorized(address indexed recorder, bool authorized);
+    event ForwarderAuthorized(address indexed forwarder, bool authorized);
     event LPAccumulatorUpdated(address indexed accumulator);
     event AavePoolUpdated(address indexed pool);
     event EmergencyWithdraw(address indexed token, uint256 amount);
@@ -135,12 +154,15 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
     // ============ Errors ============
     
     error UnauthorizedKeeper();
+    error UnauthorizedRecorder();
+    error UnauthorizedForwarder();
     error NoOpportunity();
     error OpportunityExpired();
     error InsufficientProfit();
     error FlashLoanFailed();
     error InvalidInitiator();
     error SwapFailed();
+    error RepayPoolNotSet(PoolId poolId);
 
     // ============ Constructor ============
     
@@ -153,12 +175,23 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         
         // Owner is authorized by default
         authorizedKeepers[msg.sender] = true;
+        authorizedRecorders[msg.sender] = true;
     }
 
     // ============ Modifiers ============
     
     modifier onlyKeeper() {
         if (!authorizedKeepers[msg.sender]) revert UnauthorizedKeeper();
+        _;
+    }
+
+    modifier onlyRecorder() {
+        if (!authorizedRecorders[msg.sender] && msg.sender != owner()) revert UnauthorizedRecorder();
+        _;
+    }
+
+    modifier onlyForwarder() {
+        if (!authorizedForwarders[msg.sender] && msg.sender != owner()) revert UnauthorizedForwarder();
         _;
     }
 
@@ -172,9 +205,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         uint256 currentPrice,
         uint256 backrunAmount,
         bool zeroForOne
-    ) external {
-        // Only authorized contracts can record opportunities
-        // In production, this would be restricted to the hook
+    ) external onlyRecorder {
         
         PoolId poolId = poolKey.toId();
         
@@ -185,6 +216,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
             backrunAmount: backrunAmount,
             zeroForOne: zeroForOne,
             timestamp: uint64(block.timestamp),
+            blockNumber: uint64(block.number),
             executed: false
         });
         
@@ -199,13 +231,98 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         uint256 minProfit
     ) external onlyKeeper nonReentrant {
         BackrunOpportunity storage opp = pendingBackruns[poolId];
+        if (opp.backrunAmount == 0) revert NoOpportunity();
+        _executeBackrun(poolId, opp.backrunAmount, minProfit, msg.sender);
+    }
+
+    /// @notice Execute a pending backrun using a flash loan, but for a smaller amount than recorded.
+    /// @dev This is important in practice because the "optimal" amount can exceed available liquidity
+    ///      (flash loan or pool depth). This function lets keepers execute a profitable subset.
+    function executeBackrunPartial(
+        PoolId poolId,
+        uint256 flashLoanAmount,
+        uint256 minProfit
+    ) external onlyKeeper nonReentrant {
+        _executeBackrun(poolId, flashLoanAmount, minProfit, msg.sender);
+    }
+
+    /// @notice Execute a pending backrun using keeper-provided capital (no flash loan).
+    /// @dev This is a fully on-chain execution mode that avoids dependence on external flash-loan liquidity.
+    function executeBackrunWithCapital(
+        PoolId poolId,
+        uint256 amountIn,
+        uint256 minProfit
+    ) external onlyKeeper nonReentrant {
+        BackrunOpportunity storage opp = pendingBackruns[poolId];
+        if (opp.backrunAmount == 0) revert NoOpportunity();
+        if (opp.executed) revert NoOpportunity();
+        if (block.number > uint256(opp.blockNumber) + maxOpportunityAgeBlocks) revert OpportunityExpired();
+        if (!repayPoolKeySet[poolId]) revert RepayPoolNotSet(poolId);
+
+        // Clamp to recorded backrun amount.
+        if (amountIn == 0 || amountIn > opp.backrunAmount) {
+            amountIn = opp.backrunAmount;
+        }
+
+        opp.executed = true;
+
+        address tokenIn = opp.zeroForOne
+            ? Currency.unwrap(opp.poolKey.currency0)
+            : Currency.unwrap(opp.poolKey.currency1);
+        if (tokenIn == address(0)) revert SwapFailed();
+
+        // Pull capital from keeper.
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
+
+        // Execute swaps across the two pools.
+        uint256 amountOut = _executeBackrunSwap(opp.poolKey, opp.zeroForOne, amountIn);
+        uint256 amountBack = _executeReverseSwap(repayPoolKeys[poolId], !opp.zeroForOne, amountOut);
+
+        if (amountBack < amountIn + minProfit) revert InsufficientProfit();
+
+        uint256 profit = amountBack - amountIn;
+
+        // Return principal to keeper.
+        IERC20(tokenIn).safeTransfer(msg.sender, amountIn);
+
+        // Distribute profit (LPs + keeper).
+        _distributeProfit(opp.poolKey, tokenIn, profit, msg.sender);
+    }
+
+    /// @notice Execute a pending backrun using flash loan on behalf of an authorized keeper
+    /// @dev Useful when a backrun agent contract wants to provide a standard interface.
+    function executeBackrunFor(
+        PoolId poolId,
+        uint256 minProfit,
+        address keeper
+    ) external onlyForwarder nonReentrant {
+        if (!authorizedKeepers[keeper]) revert UnauthorizedKeeper();
+        BackrunOpportunity storage opp = pendingBackruns[poolId];
+        if (opp.backrunAmount == 0) revert NoOpportunity();
+        _executeBackrun(poolId, opp.backrunAmount, minProfit, keeper);
+    }
+
+    function _executeBackrun(
+        PoolId poolId,
+        uint256 flashLoanAmount,
+        uint256 minProfit,
+        address profitRecipient
+    ) internal {
+        BackrunOpportunity storage opp = pendingBackruns[poolId];
         
         if (opp.backrunAmount == 0) revert NoOpportunity();
         if (opp.executed) revert NoOpportunity();
-        if (block.timestamp > opp.timestamp + 2) revert OpportunityExpired(); // Max 2 blocks old
+        if (block.number > uint256(opp.blockNumber) + maxOpportunityAgeBlocks) revert OpportunityExpired();
         
         // Mark as executed to prevent reentrancy
         opp.executed = true;
+
+        if (!repayPoolKeySet[poolId]) revert RepayPoolNotSet(poolId);
+
+        // Clamp to recorded opportunity.
+        if (flashLoanAmount == 0 || flashLoanAmount > opp.backrunAmount) {
+            flashLoanAmount = opp.backrunAmount;
+        }
         
         // Determine which token to borrow
         address borrowToken = opp.zeroForOne 
@@ -221,16 +338,17 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         // Encode flash loan params
         bytes memory params = abi.encode(FlashLoanParams({
             poolKey: opp.poolKey,
+            repayPoolKey: repayPoolKeys[poolId],
             zeroForOne: opp.zeroForOne,
             minProfit: minProfit,
-            profitRecipient: msg.sender
+            profitRecipient: profitRecipient
         }));
         
         // Execute flash loan
         aavePool.flashLoanSimple(
             address(this),
             borrowToken,
-            opp.backrunAmount,
+            flashLoanAmount,
             params,
             0 // referral code
         );
@@ -262,10 +380,9 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         // Calculate profit
         uint256 totalOwed = amount + premium;
         
-        // If we swapped token0 -> token1, we need to swap back
-        // This is a round-trip arbitrage
+        // Swap on an external venue/pool to get back the borrowed asset for repayment.
         uint256 amountBack = _executeReverseSwap(
-            flashParams.poolKey,
+            flashParams.repayPoolKey,
             !flashParams.zeroForOne,
             amountOut
         );
@@ -305,6 +422,14 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         BackrunOpportunity storage opp = pendingBackruns[poolId];
         
         if (opp.backrunAmount == 0 || opp.executed) {
+            return (false, 0);
+        }
+
+        // Too old => treat as stale.
+        if (block.number > uint256(opp.blockNumber) + maxOpportunityAgeBlocks) {
+            return (false, 0);
+        }
+        if (!repayPoolKeySet[poolId]) {
             return (false, 0);
         }
         
@@ -407,36 +532,29 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         BalanceDelta delta = poolManager.swap(key, params, "");
         
         // Settle the swap
-        _settleDelta(key, delta, zeroForOne);
+        _settleDelta(key, delta);
         
         // Calculate output
+        // In v4, positive means the pool owes the caller (this contract).
         int128 outputDelta = zeroForOne ? delta.amount1() : delta.amount0();
-        uint256 amountOut = outputDelta < 0 ? uint256(uint128(-outputDelta)) : uint256(uint128(outputDelta));
+        uint256 amountOut = outputDelta > 0 ? uint256(uint128(outputDelta)) : 0;
         
         return abi.encode(amountOut);
     }
     
     /// @notice Settle swap delta with pool manager
-    function _settleDelta(
-        PoolKey memory key,
-        BalanceDelta delta,
-        bool zeroForOne
-    ) internal {
-        // Settle input (positive delta = we owe)
-        Currency inputCurrency = zeroForOne ? key.currency0 : key.currency1;
-        Currency outputCurrency = zeroForOne ? key.currency1 : key.currency0;
-        
-        int128 inputDelta = zeroForOne ? delta.amount0() : delta.amount1();
-        int128 outputDelta = zeroForOne ? delta.amount1() : delta.amount0();
-        
-        // Pay input if we owe
-        if (inputDelta > 0) {
-            _pay(inputCurrency, uint128(inputDelta));
-        }
-        
-        // Take output if owed to us
-        if (outputDelta < 0) {
-            poolManager.take(outputCurrency, address(this), uint128(-outputDelta));
+    function _settleDelta(PoolKey memory key, BalanceDelta delta) internal {
+        _settleCurrency(key.currency0, delta.amount0());
+        _settleCurrency(key.currency1, delta.amount1());
+    }
+
+    function _settleCurrency(Currency currency, int128 delta) internal {
+        if (delta < 0) {
+            // We owe the pool.
+            _pay(currency, uint128(-delta));
+        } else if (delta > 0) {
+            // The pool owes us.
+            poolManager.take(currency, address(this), uint128(delta));
         }
     }
     
@@ -485,8 +603,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
     
     /// @notice Convert sqrt price to regular price
     function _sqrtPriceToPrice(uint160 sqrtPriceX96) internal pure returns (uint256) {
-        uint256 sqrtPrice = uint256(sqrtPriceX96);
-        return (sqrtPrice * sqrtPrice * PRICE_PRECISION) >> 192;
+        return HookLib.sqrtPriceToPrice(sqrtPriceX96);
     }
 
     // ============ Admin Functions ============
@@ -508,6 +625,28 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         authorizedKeepers[keeper] = authorized;
         emit KeeperAuthorized(keeper, authorized);
     }
+
+    /// @notice Authorize/revoke an opportunity recorder (typically the hook contract)
+    function setRecorderAuthorization(address recorder, bool authorized) external onlyOwner {
+        authorizedRecorders[recorder] = authorized;
+        emit RecorderAuthorized(recorder, authorized);
+    }
+
+    /// @notice Authorize/revoke an executor forwarder (typically a BackrunAgent contract)
+    function setForwarderAuthorization(address forwarder, bool authorized) external onlyOwner {
+        authorizedForwarders[forwarder] = authorized;
+        emit ForwarderAuthorized(forwarder, authorized);
+    }
+
+    function setMaxOpportunityAgeBlocks(uint256 newMaxBlocks) external onlyOwner {
+        require(newMaxBlocks > 0 && newMaxBlocks <= 100, "Invalid max blocks");
+        maxOpportunityAgeBlocks = newMaxBlocks;
+    }
+
+    function setRepayPoolKey(PoolId poolId, PoolKey calldata key) external onlyOwner {
+        repayPoolKeys[poolId] = key;
+        repayPoolKeySet[poolId] = true;
+    }
     
     /// @notice Emergency withdraw stuck tokens
     function emergencyWithdraw(address token, uint256 amount) external onlyOwner {
@@ -526,6 +665,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         uint256 backrunAmount,
         bool zeroForOne,
         uint64 timestamp,
+        uint64 blockNumber,
         bool executed
     ) {
         BackrunOpportunity storage opp = pendingBackruns[poolId];
@@ -535,6 +675,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
             opp.backrunAmount,
             opp.zeroForOne,
             opp.timestamp,
+            opp.blockNumber,
             opp.executed
         );
     }

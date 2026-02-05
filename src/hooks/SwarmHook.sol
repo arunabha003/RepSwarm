@@ -20,6 +20,18 @@ import {AgentExecutor} from "../agents/AgentExecutor.sol";
 import {ISwarmAgent, SwapContext, AgentType} from "../interfaces/ISwarmAgent.sol";
 import {IOracleRegistry} from "../interfaces/IChainlinkOracle.sol";
 import {LPFeeAccumulator} from "../LPFeeAccumulator.sol";
+import {SwarmHookData} from "../libraries/SwarmHookData.sol";
+import {HookLib} from "../libraries/HookLib.sol";
+
+interface IBackrunRecorder {
+    function recordBackrunOpportunity(
+        PoolKey calldata poolKey,
+        uint256 targetPrice,
+        uint256 currentPrice,
+        uint256 backrunAmount,
+        bool zeroForOne
+    ) external;
+}
 
 /// @title SwarmHook
 /// @notice Thin hook that ONLY delegates to agents via AgentExecutor
@@ -49,17 +61,24 @@ contract SwarmHook is BaseHook {
     /// @notice LP Fee accumulator
     LPFeeAccumulator public lpFeeAccumulator;
 
+    /// @notice Optional backrun recorder/executor (e.g., flash-loan backrunner keeper contract)
+    address public backrunRecorder;
+
     /// @notice Contract owner
     address public immutable owner;
 
     /// @notice Accumulated tokens per pool (for tracking)
     mapping(PoolId => mapping(Currency => uint256)) public accumulatedTokens;
 
+    /// @notice Track whether we've registered this pool key in the accumulator
+    mapping(PoolId => bool) public accumulatorPoolKeyRegistered;
+
     // ============ Events ============
 
     event AgentExecutorSet(address executor);
     event OracleRegistrySet(address registry);
     event LPFeeAccumulatorSet(address accumulator);
+    event BackrunRecorderSet(address recorder);
     event ArbitrageCaptured(
         PoolId indexed poolId,
         Currency indexed currency,
@@ -67,6 +86,7 @@ contract SwarmHook is BaseHook {
     );
     event FeeOverrideApplied(PoolId indexed poolId, uint24 fee);
     event BackrunOpportunityRecorded(PoolId indexed poolId, uint256 amount);
+    event MevFeeTaken(PoolId indexed poolId, Currency indexed currency, uint256 amount, address treasury);
 
     // ============ Errors ============
 
@@ -105,7 +125,7 @@ contract SwarmHook is BaseHook {
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: true,
-            afterSwapReturnDelta: false,
+            afterSwapReturnDelta: true,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
@@ -118,7 +138,7 @@ contract SwarmHook is BaseHook {
         address,
         PoolKey calldata key,
         SwapParams calldata params,
-        bytes calldata /* hookData */
+        bytes calldata hookData
     ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
         // Skip exact output swaps for simplicity
         if (params.amountSpecified >= 0) {
@@ -130,15 +150,17 @@ contract SwarmHook is BaseHook {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
 
+        _maybeRegisterPoolKey(key);
+
         // Build context for agents
-        SwapContext memory context = _buildContext(key, params);
+        SwapContext memory context = _buildContext(key, params, hookData);
 
         // Delegate to agent executor
         AgentExecutor.BeforeSwapResult memory result = agentExecutor.processBeforeSwap(context);
 
         // Handle arbitrage capture
         if (result.shouldCapture && result.captureAmount > 0) {
-            return _executeCapture(key, params, result.captureAmount);
+            return _executeCapture(key, params, result.captureAmount, hookData);
         }
 
         // Handle fee override
@@ -160,16 +182,18 @@ contract SwarmHook is BaseHook {
         address,
         PoolKey calldata key,
         SwapParams calldata params,
-        BalanceDelta,
-        bytes calldata /* hookData */
+        BalanceDelta delta,
+        bytes calldata hookData
     ) internal override returns (bytes4, int128) {
         // If no executor, pass through
         if (address(agentExecutor) == address(0)) {
             return (IHooks.afterSwap.selector, 0);
         }
 
+        _maybeRegisterPoolKey(key);
+
         // Build context
-        SwapContext memory context = _buildContext(key, params);
+        SwapContext memory context = _buildContext(key, params, hookData);
 
         // Get new pool price after swap
         uint160 sqrtPriceX96 = _getSqrtPrice(key);
@@ -183,9 +207,21 @@ contract SwarmHook is BaseHook {
 
         if (result.shouldBackrun && result.backrunAmount > 0) {
             emit BackrunOpportunityRecorded(key.toId(), result.backrunAmount);
+            if (backrunRecorder != address(0)) {
+                // Record opportunity for off-chain keeper execution (or on-chain executor).
+                IBackrunRecorder(backrunRecorder).recordBackrunOpportunity(
+                    key,
+                    result.targetPrice,
+                    result.currentPrice,
+                    result.backrunAmount,
+                    result.zeroForOne
+                );
+            }
         }
 
-        return (IHooks.afterSwap.selector, 0);
+        int128 hookDeltaUnspecified = _takeMevFeeAfterSwap(key, params, delta, hookData);
+
+        return (IHooks.afterSwap.selector, hookDeltaUnspecified);
     }
 
     // ============ Internal Functions ============
@@ -193,7 +229,8 @@ contract SwarmHook is BaseHook {
     /// @notice Build swap context for agents
     function _buildContext(
         PoolKey calldata key,
-        SwapParams calldata params
+        SwapParams calldata params,
+        bytes calldata hookData
     ) internal view returns (SwapContext memory context) {
         PoolId poolId = key.toId();
         
@@ -213,7 +250,7 @@ contract SwarmHook is BaseHook {
             oraclePrice: oraclePrice,
             oracleConfidence: oracleConfidence,
             liquidity: liquidity,
-            hookData: ""
+            hookData: hookData
         });
     }
 
@@ -221,7 +258,8 @@ contract SwarmHook is BaseHook {
     function _executeCapture(
         PoolKey calldata key,
         SwapParams calldata params,
-        uint256 captureAmount
+        uint256 captureAmount,
+        bytes calldata hookData
     ) internal returns (bytes4, BeforeSwapDelta, uint24) {
         Currency inputCurrency = params.zeroForOne ? key.currency0 : key.currency1;
         PoolId poolId = key.toId();
@@ -230,17 +268,52 @@ contract SwarmHook is BaseHook {
         poolManager.take(inputCurrency, address(this), captureAmount);
         accumulatedTokens[poolId][inputCurrency] += captureAmount;
 
-        // Send to LP accumulator if configured
-        if (address(lpFeeAccumulator) != address(0)) {
-            _sendToAccumulator(poolId, inputCurrency, captureAmount);
+        (bool hasPayload, SwarmHookData.Payload memory payload) = _decodeHookData(hookData);
+
+        // Distribute captured value using payload (if present). Default: all to LP accumulator.
+        uint256 treasuryAmount = 0;
+        uint256 lpAmount = captureAmount;
+        address treasury = address(0);
+
+        if (hasPayload) {
+            treasury = payload.treasury;
+            if (payload.treasuryBps > 0 && treasury != address(0)) {
+                treasuryAmount = (captureAmount * uint256(payload.treasuryBps)) / 10_000;
+            }
+
+            if (payload.lpShareBps > 0) {
+                lpAmount = (captureAmount * uint256(payload.lpShareBps)) / 10_000;
+            } else {
+                // If lpShareBps is unset, default the remainder (after treasury) to LPs.
+                lpAmount = captureAmount - treasuryAmount;
+            }
+        }
+
+        // Clamp so we never exceed captured amount; route any remainder to LPs.
+        if (treasuryAmount > captureAmount) treasuryAmount = captureAmount;
+        if (lpAmount + treasuryAmount > captureAmount) {
+            lpAmount = captureAmount - treasuryAmount;
+        } else {
+            lpAmount += (captureAmount - treasuryAmount - lpAmount);
+        }
+
+        if (treasuryAmount > 0 && treasury != address(0)) {
+            _sendToTreasury(inputCurrency, treasury, treasuryAmount);
+        }
+
+        // Send to LP accumulator if configured; otherwise leave in hook contract.
+        if (lpAmount > 0 && address(lpFeeAccumulator) != address(0)) {
+            _sendToAccumulator(poolId, inputCurrency, lpAmount);
         }
 
         emit ArbitrageCaptured(poolId, inputCurrency, captureAmount);
 
-        // Create delta
-        BeforeSwapDelta delta = params.zeroForOne
-            ? toBeforeSwapDelta(int128(int256(captureAmount)), 0)
-            : toBeforeSwapDelta(0, int128(int256(captureAmount)));
+        // Charge the swapper by shrinking the amount that is actually swapped (exact input only).
+        // The hook has already `take`n `captureAmount` of the input currency from the manager, and
+        // this delta ensures the manager nets the swapper's original `amountSpecified` such that:
+        // - `captureAmount` is diverted to the hook
+        // - the remainder is swapped as usual
+        BeforeSwapDelta delta = toBeforeSwapDelta(int128(int256(captureAmount)), 0);
 
         return (IHooks.beforeSwap.selector, delta, 0);
     }
@@ -261,6 +334,101 @@ contract SwarmHook is BaseHook {
             );
         }
         lpFeeAccumulator.accumulateFees(poolId, currency, amount);
+    }
+
+    function _sendToTreasury(
+        Currency currency,
+        address treasury,
+        uint256 amount
+    ) internal {
+        if (amount == 0) return;
+
+        if (currency.isAddressZero()) {
+            (bool success,) = treasury.call{value: amount}("");
+            require(success, "ETH transfer failed");
+        } else {
+            IERC20Minimal(Currency.unwrap(currency)).transfer(treasury, amount);
+        }
+    }
+
+    function _decodeHookData(bytes calldata hookData)
+        internal
+        pure
+        returns (bool hasPayload, SwarmHookData.Payload memory payload)
+    {
+        if (hookData.length == 0) return (false, payload);
+        // SwarmHookData.Payload is fully static => ABI-encoded length is fixed at 6 * 32 bytes.
+        if (hookData.length != 192) return (false, payload);
+        payload = abi.decode(hookData, (SwarmHookData.Payload));
+        return (true, payload);
+    }
+
+    function _maybeRegisterPoolKey(PoolKey calldata key) internal {
+        if (address(lpFeeAccumulator) == address(0)) return;
+
+        PoolId poolId = key.toId();
+        if (accumulatorPoolKeyRegistered[poolId]) return;
+
+        // Best-effort: accumulator ignores duplicates; if this reverts, we don't want to brick swaps.
+        try lpFeeAccumulator.registerPoolKey(key) {
+            accumulatorPoolKeyRegistered[poolId] = true;
+        } catch {}
+    }
+
+    /// @notice Collect a MEV fee in the unspecified currency (exact-input swaps only) using
+    /// Uniswap v4's `afterSwapReturnDelta` accounting pattern.
+    /// @dev Returns the hook delta for the unspecified currency.
+    function _takeMevFeeAfterSwap(
+        PoolKey calldata key,
+        SwapParams calldata params,
+        BalanceDelta delta,
+        bytes calldata hookData
+    ) internal returns (int128 hookDeltaUnspecified) {
+        (bool hasPayload, SwarmHookData.Payload memory payload) = _decodeHookData(hookData);
+        if (!hasPayload) return 0;
+
+        // `mevFee` is in Uniswap units (fee / 1e6). Example: 3000 = 0.30%.
+        uint24 mevFee = payload.mevFee;
+        if (mevFee == 0) return 0;
+
+        // Only support exact input swaps (same as `_beforeSwap`).
+        if (params.amountSpecified >= 0) return 0;
+
+        PoolId poolId = key.toId();
+        bool outputIsToken0 = params.zeroForOne ? false : true;
+        int256 outputAmount = outputIsToken0 ? delta.amount0() : delta.amount1();
+        if (outputAmount <= 0) return 0;
+
+        uint256 amountOut = uint256(outputAmount);
+        uint256 feeAmount = (amountOut * uint256(mevFee)) / 1_000_000;
+        if (feeAmount == 0) return 0;
+
+        require(feeAmount <= ((uint256(1) << 127) - 1), "fee too large");
+
+        Currency feeCurrency = outputIsToken0 ? key.currency0 : key.currency1;
+
+        // Pull the fee to the hook; returning `hookDeltaUnspecified` reduces the output to the user.
+        poolManager.take(feeCurrency, address(this), feeAmount);
+
+        uint256 treasuryAmount = 0;
+        if (payload.treasury != address(0) && payload.treasuryBps > 0) {
+            treasuryAmount = (feeAmount * uint256(payload.treasuryBps)) / 10_000;
+        }
+
+        uint256 lpAmount = feeAmount - treasuryAmount;
+
+        if (treasuryAmount > 0 && payload.treasury != address(0)) {
+            _sendToTreasury(feeCurrency, payload.treasury, treasuryAmount);
+        }
+
+        if (lpAmount > 0 && address(lpFeeAccumulator) != address(0)) {
+            _sendToAccumulator(poolId, feeCurrency, lpAmount);
+        } else if (lpAmount > 0 && payload.treasury != address(0)) {
+            _sendToTreasury(feeCurrency, payload.treasury, lpAmount);
+        }
+
+        emit MevFeeTaken(poolId, feeCurrency, feeAmount, payload.treasury);
+        hookDeltaUnspecified = int128(int256(feeAmount));
     }
 
     /// @notice Get oracle price for pool
@@ -297,8 +465,7 @@ contract SwarmHook is BaseHook {
 
     /// @notice Convert sqrt price to regular price
     function _sqrtPriceToPrice(uint160 sqrtPriceX96) internal pure returns (uint256) {
-        uint256 sqrtPrice = uint256(sqrtPriceX96);
-        return (sqrtPrice * sqrtPrice * PRICE_PRECISION) >> 192;
+        return HookLib.sqrtPriceToPrice(sqrtPriceX96);
     }
 
     // ============ Admin Functions ============
@@ -321,6 +488,12 @@ contract SwarmHook is BaseHook {
         if (_accumulator == address(0)) revert InvalidAddress();
         lpFeeAccumulator = LPFeeAccumulator(payable(_accumulator));
         emit LPFeeAccumulatorSet(_accumulator);
+    }
+
+    /// @notice Set optional backrun recorder contract
+    function setBackrunRecorder(address _recorder) external onlyOwner {
+        backrunRecorder = _recorder;
+        emit BackrunRecorderSet(_recorder);
     }
 
     // ============ View Functions ============

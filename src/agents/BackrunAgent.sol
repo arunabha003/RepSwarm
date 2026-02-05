@@ -12,6 +12,7 @@ import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {SwarmAgentBase} from "./base/SwarmAgentBase.sol";
 import {ISwarmAgent, IBackrunAgent, AgentType, SwapContext, AgentResult} from "../interfaces/ISwarmAgent.sol";
 import {LPFeeAccumulator} from "../LPFeeAccumulator.sol";
+import {FlashLoanBackrunner} from "../backrun/FlashLoanBackrunner.sol";
 
 /// @title BackrunAgent
 /// @notice Detects and executes backrun opportunities after swaps
@@ -39,6 +40,9 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
 
     /// @notice LP fee accumulator for profit distribution
     LPFeeAccumulator public lpFeeAccumulator;
+
+    /// @notice Optional flash-loan executor (Aave v3) for real backrun execution
+    FlashLoanBackrunner public flashBackrunner;
 
     /// @notice Share of profit going to LPs (basis points)
     uint256 public lpShareBps;
@@ -77,6 +81,7 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
     );
 
     event ConfigUpdated(uint256 lpShareBps, uint256 minDivergenceBps);
+    event FlashBackrunnerSet(address indexed backrunner);
 
     // ============ Constructor ============
 
@@ -155,37 +160,24 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
         SwapContext calldata context,
         BackrunOpportunity calldata opportunity
     ) external override onlyAuthorized returns (bool success, uint256 profit) {
-        bytes32 poolIdBytes = bytes32(PoolId.unwrap(context.poolId));
-        
-        // Verify opportunity is still valid
-        BackrunOpportunity storage stored = pendingOpportunities[poolIdBytes];
-        if (!stored.shouldBackrun || stored.backrunAmount == 0) {
+        // Real execution path: delegate to a flash-loan executor that performs the swaps
+        // and distributes profits via LPFeeAccumulator.
+        if (address(flashBackrunner) == address(0)) {
             return (false, 0);
         }
-        
-        // Check age
-        if (block.number > opportunityTimestamp[poolIdBytes] + maxOpportunityAge) {
-            delete pendingOpportunities[poolIdBytes];
+
+        // Use a conservative floor so we don't execute for dust; keepers can still choose to call
+        // the FlashLoanBackrunner directly with custom parameters.
+        uint256 minProfit = opportunity.expectedProfit > 0 ? opportunity.expectedProfit / 10 : 0;
+
+        try flashBackrunner.executeBackrunFor(context.poolId, minProfit, msg.sender) {
+            // Profit is emitted by the backrunner and tracked there; returning 0 keeps this
+            // interface non-blocking while still ensuring execution is real.
+            return (true, 0);
+        } catch {
+            // If execution fails (no opportunity, expired, not profitable, etc.), report failure.
             return (false, 0);
         }
-        
-        // Mark as executed
-        delete pendingOpportunities[poolIdBytes];
-        
-        // In production, this would execute the actual backrun swap
-        // For now, we just record the expected profit
-        profit = opportunity.expectedProfit;
-        
-        // Distribute profit
-        if (profit > 0 && address(lpFeeAccumulator) != address(0)) {
-            uint256 lpShare = FullMath.mulDiv(profit, lpShareBps, BASIS_POINTS);
-            // Transfer would happen here in real implementation
-            totalProfits[poolIdBytes] += profit;
-        }
-        
-        emit BackrunExecuted(poolIdBytes, profit, 0, msg.sender);
-        
-        return (true, profit);
     }
 
     // ============ Core Logic ============
@@ -310,6 +302,11 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
     /// @notice Set LP fee accumulator
     function setLPFeeAccumulator(address _accumulator) external onlyOwner {
         lpFeeAccumulator = LPFeeAccumulator(payable(_accumulator));
+    }
+
+    function setFlashBackrunner(address _backrunner) external onlyOwner {
+        flashBackrunner = FlashLoanBackrunner(payable(_backrunner));
+        emit FlashBackrunnerSet(_backrunner);
     }
 
     /// @notice Update configuration

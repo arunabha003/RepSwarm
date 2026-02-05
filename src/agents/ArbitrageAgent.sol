@@ -225,15 +225,19 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
         uint256 priceUpper = oraclePrice + effectiveConfidence;
 
         if (zeroForOne) {
-            // Use upper bound for conservative calculation
+            // Selling token0 for token1. If the pool gives a better rate than the oracle upper bound,
+            // the swapper is extracting extra value. Express that value in *input* (token0) units so
+            // the hook can divert a portion of the input to itself.
             if (poolPrice <= priceUpper) return 0;
-            uint256 priceDiff = poolPrice - priceUpper;
-            opportunity = FullMath.mulDiv(swapAmount, priceDiff, PRICE_PRECISION);
+            uint256 priceDiff = poolPrice - priceUpper; // (token1/token0)
+            // opportunity0 = amount0 * (poolPrice - priceUpper) / priceUpper
+            opportunity = FullMath.mulDiv(swapAmount, priceDiff, priceUpper);
         } else {
-            // Use lower bound for conservative calculation
+            // Selling token1 for token0. Express opportunity in *input* (token1) units.
+            // opportunity1 = amount1 * (priceLower - poolPrice) / poolPrice
             if (poolPrice >= priceLower) return 0;
-            uint256 priceDiff = priceLower - poolPrice;
-            opportunity = FullMath.mulDiv(swapAmount, priceDiff, PRICE_PRECISION);
+            uint256 priceDiff = priceLower - poolPrice; // (token1/token0)
+            opportunity = FullMath.mulDiv(swapAmount, priceDiff, poolPrice);
         }
     }
 

@@ -53,6 +53,9 @@ contract AgentExecutor is Ownable {
         bool shouldBackrun;
         uint256 backrunAmount;
         uint256 expectedProfit;
+        bool zeroForOne;
+        uint256 targetPrice;
+        uint256 currentPrice;
     }
 
     // ============ Events ============
@@ -196,6 +199,9 @@ contract AgentExecutor is Ownable {
                         result.shouldBackrun = true;
                         result.backrunAmount = opportunity.backrunAmount;
                         result.expectedProfit = opportunity.expectedProfit;
+                        result.zeroForOne = opportunity.zeroForOne;
+                        result.targetPrice = opportunity.targetPrice;
+                        result.currentPrice = newPoolPrice;
                         _recordExecution(backrunAgent, true, opportunity.expectedProfit);
                         emit AgentExecuted(
                             AgentType.BACKRUN,
