@@ -1,0 +1,59 @@
+export const SwarmCoordinatorAbi = [
+  "event IntentCreated(uint256 indexed intentId,address indexed requester,uint256 candidateCount)",
+  "event ProposalSubmitted(uint256 indexed intentId,address indexed agent,uint256 indexed agentId,uint256 candidateId,int256 score)",
+  "event IntentExecuted(uint256 indexed intentId,address indexed executor,uint256 candidateId,uint256 agentId)",
+  "function nextIntentId() view returns (uint256)",
+  "function getIntent(uint256 intentId) view returns (tuple(address requester,address currencyIn,address currencyOut,uint128 amountIn,uint128 amountOutMin,uint64 deadline,uint16 mevFeeBps,uint16 treasuryBps,uint16 lpShareBps,bool executed))",
+  "function getCandidateCount(uint256 intentId) view returns (uint256)",
+  "function getCandidatePath(uint256 intentId,uint256 candidateId) view returns (bytes)",
+  "function getProposalAgents(uint256 intentId) view returns (address[])",
+  "function getProposal(uint256 intentId,address agent) view returns (tuple(uint256 agentId,uint256 candidateId,int256 score,bytes data,uint64 timestamp))",
+  "function agents(address agent) view returns (tuple(uint256 agentId,bool active))",
+  "function treasury() view returns (address)",
+  "function enforceIdentity() view returns (bool)",
+  "function enforceReputation() view returns (bool)",
+  "function registerAgent(address agent,uint256 agentId,bool active)",
+  "function setTreasury(address treasury)",
+  "function setEnforcement(bool enforceIdentity,bool enforceReputation)",
+  "function setReputationConfig(address registry,string tag1,string tag2,int256 minReputationWad)",
+  "function setReputationClients(address[] clients)",
+  "function createIntent((address currencyIn,address currencyOut,uint128 amountIn,uint128 amountOutMin,uint64 deadline,uint16 mevFeeBps,uint16 treasuryBps,uint16 lpShareBps) params, bytes[] candidatePaths) returns (uint256)",
+  "function submitProposal(uint256 intentId,uint256 candidateId,int256 score,bytes data)",
+  "function executeIntent(uint256 intentId) payable"
+];
+
+export const AgentExecutorAbi = [
+  "event AgentRegistered(uint8 indexed agentType,address indexed agent,uint256 agentId)",
+  "event AgentSwitched(uint8 indexed agentType,address indexed oldAgent,address indexed newAgent)",
+  "event AgentEnabled(uint8 indexed agentType,bool enabled)",
+  "event AgentSwitchedDueToReputation(uint8 indexed agentType,address indexed oldAgent,address indexed newAgent,int256 reputationWad)",
+  "function owner() view returns (address)",
+  "function agents(uint8 agentType) view returns (address)",
+  "function backupAgents(uint8 agentType) view returns (address)",
+  "function agentEnabled(uint8 agentType) view returns (bool)",
+  "function registerAgent(uint8 agentType,address agent)",
+  "function setBackupAgent(uint8 agentType,address agent)",
+  "function setAgentEnabled(uint8 agentType,bool enabled)",
+  "function setReputationSwitchConfig(uint8 agentType,address registry,string tag1,string tag2,int256 minReputationWad,bool enabled)",
+  "function setReputationSwitchClients(uint8 agentType,address[] clients)",
+  "function checkAndSwitchAgentIfBelowThreshold(uint8 agentType) returns (bool)",
+  "function getReputationSwitchConfig(uint8 agentType) view returns (address registry,int256 minReputationWad,bool enabled,uint256 clientCount,string tag1,string tag2)"
+];
+
+export const LPFeeAccumulatorAbi = [
+  "event FeesAccumulated(bytes32 indexed poolId,address indexed currency,uint256 amount)",
+  "event FeesDonatedToLPs(bytes32 indexed poolId,address indexed currency0,address indexed currency1,uint256 amount0,uint256 amount1)",
+  "function accumulatedFees(bytes32 poolId,address currency) view returns (uint256)",
+  "function canDonate(bytes32 poolId) view returns (bool canDonate,uint256 amount0,uint256 amount1)",
+  "function donateToLPs(bytes32 poolId)"
+];
+
+export const FlashLoanBackrunnerAbi = [
+  "event BackrunOpportunityDetected(bytes32 indexed poolId,uint256 targetPrice,uint256 currentPrice,uint256 backrunAmount,bool zeroForOne)",
+  "event BackrunExecuted(bytes32 indexed poolId,uint256 flashLoanAmount,uint256 profit,uint256 lpShare,address keeper)",
+  "function authorizedKeepers(address) view returns (bool)",
+  "function getPendingBackrun(bytes32 poolId) view returns (uint256 targetPrice,uint256 currentPrice,uint256 backrunAmount,bool zeroForOne,uint64 timestamp,uint64 blockNumber,bool executed)",
+  "function executeBackrunPartial(bytes32 poolId,uint256 flashLoanAmount,uint256 minProfit)",
+  "function executeBackrunWithCapital(bytes32 poolId,uint256 amountIn,uint256 minProfit)"
+];
+
