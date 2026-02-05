@@ -113,6 +113,23 @@ Sepolia end-to-end suite (real integrations on fork):
 forge test --match-contract E2ESepoliaTest -vvv
 ```
 
+## Event-Driven Backrun Automation (Keeper)
+
+Backrun execution is intentionally a separate transaction (so user swaps never revert because the backrun failed). To make it “automatic”, run a keeper that listens for opportunities and executes them immediately.
+
+Keeper implementation lives in:
+
+- `keeper/`
+
+Run:
+
+```bash
+cd keeper
+npm install
+cp .env.example .env
+npm run start
+```
+
 Mainnet end-to-end suite (disabled by default):
 
 ```bash
@@ -152,4 +169,3 @@ Deployment scripts live in `script/`. For Sepolia deployment notes see:
 
 - Oracle pricing in E2E uses the Chainlink ETH/USD feed as a proxy for WETH/DAI (assuming DAI ~= USD). For production, configure pair-specific feeds or a safer composite oracle.
 - This repo is not an audit. Use at your own risk until formally reviewed.
-
