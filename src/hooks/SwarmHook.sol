@@ -6,7 +6,11 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {
+    BeforeSwapDelta,
+    BeforeSwapDeltaLibrary,
+    toBeforeSwapDelta
+} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
@@ -79,11 +83,7 @@ contract SwarmHook is BaseHook {
     event OracleRegistrySet(address registry);
     event LPFeeAccumulatorSet(address accumulator);
     event BackrunRecorderSet(address recorder);
-    event ArbitrageCaptured(
-        PoolId indexed poolId,
-        Currency indexed currency,
-        uint256 amount
-    );
+    event ArbitrageCaptured(PoolId indexed poolId, Currency indexed currency, uint256 amount);
     event FeeOverrideApplied(PoolId indexed poolId, uint24 fee);
     event BackrunOpportunityRecorded(PoolId indexed poolId, uint256 amount);
     event MevFeeTaken(PoolId indexed poolId, Currency indexed currency, uint256 amount, address treasury);
@@ -103,10 +103,7 @@ contract SwarmHook is BaseHook {
 
     // ============ Constructor ============
 
-    constructor(
-        IPoolManager _poolManager,
-        address _owner
-    ) BaseHook(_poolManager) {
+    constructor(IPoolManager _poolManager, address _owner) BaseHook(_poolManager) {
         owner = _owner;
     }
 
@@ -134,12 +131,11 @@ contract SwarmHook is BaseHook {
     // ============ Core Hook Functions ============
 
     /// @notice Called before a swap - delegates to agents for decision
-    function _beforeSwap(
-        address,
-        PoolKey calldata key,
-        SwapParams calldata params,
-        bytes calldata hookData
-    ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
+    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
+        internal
+        override
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
         // Skip exact output swaps for simplicity
         if (params.amountSpecified >= 0) {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
@@ -167,9 +163,9 @@ contract SwarmHook is BaseHook {
         if (result.useOverrideFee && result.overrideFee > 0) {
             uint24 fee = result.overrideFee;
             if (fee > MAX_DYNAMIC_FEE) fee = MAX_DYNAMIC_FEE;
-            
+
             emit FeeOverrideApplied(key.toId(), fee);
-            
+
             uint24 overrideFee = fee | LPFeeLibrary.OVERRIDE_FEE_FLAG;
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, overrideFee);
         }
@@ -200,22 +196,16 @@ contract SwarmHook is BaseHook {
         uint256 newPoolPrice = _sqrtPriceToPrice(sqrtPriceX96);
 
         // Delegate to agent executor for backrun analysis
-        AgentExecutor.AfterSwapResult memory result = agentExecutor.processAfterSwap(
-            context,
-            newPoolPrice
-        );
+        AgentExecutor.AfterSwapResult memory result = agentExecutor.processAfterSwap(context, newPoolPrice);
 
         if (result.shouldBackrun && result.backrunAmount > 0) {
             emit BackrunOpportunityRecorded(key.toId(), result.backrunAmount);
             if (backrunRecorder != address(0)) {
                 // Record opportunity for off-chain keeper execution (or on-chain executor).
-                IBackrunRecorder(backrunRecorder).recordBackrunOpportunity(
-                    key,
-                    result.targetPrice,
-                    result.currentPrice,
-                    result.backrunAmount,
-                    result.zeroForOne
-                );
+                IBackrunRecorder(backrunRecorder)
+                    .recordBackrunOpportunity(
+                        key, result.targetPrice, result.currentPrice, result.backrunAmount, result.zeroForOne
+                    );
             }
         }
 
@@ -227,13 +217,13 @@ contract SwarmHook is BaseHook {
     // ============ Internal Functions ============
 
     /// @notice Build swap context for agents
-    function _buildContext(
-        PoolKey calldata key,
-        SwapParams calldata params,
-        bytes calldata hookData
-    ) internal view returns (SwapContext memory context) {
+    function _buildContext(PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
+        internal
+        view
+        returns (SwapContext memory context)
+    {
         PoolId poolId = key.toId();
-        
+
         // Get pool state
         uint160 sqrtPriceX96 = _getSqrtPrice(key);
         uint128 liquidity = _getLiquidity(key);
@@ -319,28 +309,17 @@ contract SwarmHook is BaseHook {
     }
 
     /// @notice Send captured tokens to LP accumulator
-    function _sendToAccumulator(
-        PoolId poolId,
-        Currency currency,
-        uint256 amount
-    ) internal {
+    function _sendToAccumulator(PoolId poolId, Currency currency, uint256 amount) internal {
         if (currency.isAddressZero()) {
             (bool success,) = address(lpFeeAccumulator).call{value: amount}("");
             require(success, "ETH transfer failed");
         } else {
-            IERC20Minimal(Currency.unwrap(currency)).transfer(
-                address(lpFeeAccumulator),
-                amount
-            );
+            IERC20Minimal(Currency.unwrap(currency)).transfer(address(lpFeeAccumulator), amount);
         }
         lpFeeAccumulator.accumulateFees(poolId, currency, amount);
     }
 
-    function _sendToTreasury(
-        Currency currency,
-        address treasury,
-        uint256 amount
-    ) internal {
+    function _sendToTreasury(Currency currency, address treasury, uint256 amount) internal {
         if (amount == 0) return;
 
         if (currency.isAddressZero()) {
@@ -432,9 +411,7 @@ contract SwarmHook is BaseHook {
     }
 
     /// @notice Get oracle price for pool
-    function _getOraclePrice(
-        PoolKey calldata key
-    ) internal view returns (uint256 price, uint256 confidence) {
+    function _getOraclePrice(PoolKey calldata key) internal view returns (uint256 price, uint256 confidence) {
         if (address(oracleRegistry) == address(0)) {
             return (0, 0);
         }
@@ -499,10 +476,7 @@ contract SwarmHook is BaseHook {
     // ============ View Functions ============
 
     /// @notice Get accumulated tokens for a pool
-    function getAccumulatedTokens(
-        PoolId poolId,
-        Currency currency
-    ) external view returns (uint256) {
+    function getAccumulatedTokens(PoolId poolId, Currency currency) external view returns (uint256) {
         return accumulatedTokens[poolId][currency];
     }
 

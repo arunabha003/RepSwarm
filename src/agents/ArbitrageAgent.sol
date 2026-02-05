@@ -41,12 +41,9 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
 
     // ============ Constructor ============
 
-    constructor(
-        IPoolManager _poolManager,
-        address _owner,
-        uint256 _hookShareBps,
-        uint256 _minDivergenceBps
-    ) SwarmAgentBase(_poolManager, _owner) {
+    constructor(IPoolManager _poolManager, address _owner, uint256 _hookShareBps, uint256 _minDivergenceBps)
+        SwarmAgentBase(_poolManager, _owner)
+    {
         hookShareBps = _hookShareBps;
         minDivergenceBps = _minDivergenceBps;
         maxCaptureRatio = 5000; // 50% max capture by default
@@ -60,11 +57,9 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
     }
 
     /// @inheritdoc SwarmAgentBase
-    function _execute(
-        SwapContext calldata context
-    ) internal override returns (AgentResult memory result) {
+    function _execute(SwapContext calldata context) internal override returns (AgentResult memory result) {
         ArbitrageResult memory arbResult = _analyzeArbitrage(context);
-        
+
         result.shouldAct = arbResult.shouldCapture;
         result.value = arbResult.hookShare;
         result.secondaryValue = arbResult.arbitrageAmount;
@@ -72,11 +67,14 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
     }
 
     /// @inheritdoc SwarmAgentBase
-    function _getRecommendation(
-        SwapContext calldata context
-    ) internal view override returns (AgentResult memory result) {
+    function _getRecommendation(SwapContext calldata context)
+        internal
+        view
+        override
+        returns (AgentResult memory result)
+    {
         ArbitrageResult memory arbResult = _analyzeArbitrage(context);
-        
+
         result.shouldAct = arbResult.shouldCapture;
         result.value = arbResult.hookShare;
         result.secondaryValue = arbResult.arbitrageAmount;
@@ -86,47 +84,37 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
     // ============ IArbitrageAgent Implementation ============
 
     /// @inheritdoc IArbitrageAgent
-    function analyzeArbitrage(
-        SwapContext calldata context
-    ) external view override returns (ArbitrageResult memory result) {
+    function analyzeArbitrage(SwapContext calldata context)
+        external
+        view
+        override
+        returns (ArbitrageResult memory result)
+    {
         return _analyzeArbitrage(context);
     }
 
     // ============ Core Logic (Moved from Hook) ============
 
     /// @notice Internal arbitrage analysis - THE CORE LOGIC
-    function _analyzeArbitrage(
-        SwapContext calldata context
-    ) internal view returns (ArbitrageResult memory result) {
+    function _analyzeArbitrage(SwapContext calldata context) internal view returns (ArbitrageResult memory result) {
         // Validate inputs
         if (context.poolPrice == 0 || context.oraclePrice == 0) {
             return result;
         }
 
         // Calculate price divergence in basis points
-        result.divergenceBps = _calculateDivergenceBps(
-            context.poolPrice,
-            context.oraclePrice
-        );
+        result.divergenceBps = _calculateDivergenceBps(context.poolPrice, context.oraclePrice);
 
         // Check if outside oracle confidence band
-        result.isOutsideConfidence = _isOutsideConfidenceBand(
-            context.poolPrice,
-            context.oraclePrice,
-            context.oracleConfidence
-        );
+        result.isOutsideConfidence =
+            _isOutsideConfidenceBand(context.poolPrice, context.oraclePrice, context.oracleConfidence);
 
         // Determine if we should capture
         // Must be: outside confidence band AND divergence > threshold AND advantageous direction
-        bool isAdvantageous = _isArbitrageAdvantageous(
-            context.poolPrice,
-            context.oraclePrice,
-            context.params.zeroForOne
-        );
+        bool isAdvantageous =
+            _isArbitrageAdvantageous(context.poolPrice, context.oraclePrice, context.params.zeroForOne);
 
-        result.shouldCapture = result.isOutsideConfidence 
-            && result.divergenceBps >= minDivergenceBps
-            && isAdvantageous;
+        result.shouldCapture = result.isOutsideConfidence && result.divergenceBps >= minDivergenceBps && isAdvantageous;
 
         if (!result.shouldCapture) {
             return result;
@@ -135,20 +123,12 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
         // Calculate arbitrage opportunity
         uint256 swapAmount = _getSwapAmount(context.params.amountSpecified);
         result.arbitrageAmount = _calculateArbitrageOpportunity(
-            context.poolPrice,
-            context.oraclePrice,
-            context.oracleConfidence,
-            swapAmount,
-            context.params.zeroForOne
+            context.poolPrice, context.oraclePrice, context.oracleConfidence, swapAmount, context.params.zeroForOne
         );
 
         // Calculate hook share
         if (result.arbitrageAmount > 0) {
-            result.hookShare = FullMath.mulDiv(
-                result.arbitrageAmount,
-                hookShareBps,
-                BASIS_POINTS
-            );
+            result.hookShare = FullMath.mulDiv(result.arbitrageAmount, hookShareBps, BASIS_POINTS);
 
             // Apply capture ratio cap
             uint256 maxCapture = FullMath.mulDiv(swapAmount, maxCaptureRatio, BASIS_POINTS);
@@ -159,12 +139,13 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
     }
 
     /// @notice Calculate price divergence in basis points
-    function _calculateDivergenceBps(
-        uint256 poolPrice,
-        uint256 oraclePrice
-    ) internal pure returns (uint256 divergenceBps) {
+    function _calculateDivergenceBps(uint256 poolPrice, uint256 oraclePrice)
+        internal
+        pure
+        returns (uint256 divergenceBps)
+    {
         if (oraclePrice == 0) return 0;
-        
+
         if (poolPrice > oraclePrice) {
             divergenceBps = FullMath.mulDiv(poolPrice - oraclePrice, BASIS_POINTS, oraclePrice);
         } else {
@@ -173,29 +154,29 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
     }
 
     /// @notice Check if pool price is outside oracle confidence band
-    function _isOutsideConfidenceBand(
-        uint256 poolPrice,
-        uint256 oraclePrice,
-        uint256 oracleConfidence
-    ) internal pure returns (bool) {
+    function _isOutsideConfidenceBand(uint256 poolPrice, uint256 oraclePrice, uint256 oracleConfidence)
+        internal
+        pure
+        returns (bool)
+    {
         if (oraclePrice == 0 || poolPrice == 0) return false;
-        
+
         // Calculate bounds
         uint256 minConfidence = FullMath.mulDiv(oraclePrice, MIN_CONFIDENCE_BPS, BASIS_POINTS);
         uint256 effectiveConfidence = oracleConfidence > minConfidence ? oracleConfidence : minConfidence;
-        
+
         uint256 lower = oraclePrice > effectiveConfidence ? oraclePrice - effectiveConfidence : 0;
         uint256 upper = oraclePrice + effectiveConfidence;
-        
+
         return poolPrice < lower || poolPrice > upper;
     }
 
     /// @notice Determine if arbitrage is advantageous for the swap direction
-    function _isArbitrageAdvantageous(
-        uint256 poolPrice,
-        uint256 oraclePrice,
-        bool zeroForOne
-    ) internal pure returns (bool) {
+    function _isArbitrageAdvantageous(uint256 poolPrice, uint256 oraclePrice, bool zeroForOne)
+        internal
+        pure
+        returns (bool)
+    {
         if (zeroForOne) {
             // Selling token0 for token1 - advantageous if pool gives better rate
             return poolPrice > oraclePrice;
@@ -220,7 +201,7 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
         // Calculate bounds
         uint256 minConfidence = FullMath.mulDiv(oraclePrice, MIN_CONFIDENCE_BPS, BASIS_POINTS);
         uint256 effectiveConfidence = oracleConfidence > minConfidence ? oracleConfidence : minConfidence;
-        
+
         uint256 priceLower = oraclePrice > effectiveConfidence ? oraclePrice - effectiveConfidence : 0;
         uint256 priceUpper = oraclePrice + effectiveConfidence;
 
@@ -249,19 +230,15 @@ contract ArbitrageAgent is SwarmAgentBase, IArbitrageAgent {
     // ============ Admin Functions ============
 
     /// @notice Update arbitrage configuration
-    function setConfig(
-        uint256 _hookShareBps,
-        uint256 _minDivergenceBps,
-        uint256 _maxCaptureRatio
-    ) external onlyOwner {
+    function setConfig(uint256 _hookShareBps, uint256 _minDivergenceBps, uint256 _maxCaptureRatio) external onlyOwner {
         require(_hookShareBps <= BASIS_POINTS, "Invalid hook share");
         require(_minDivergenceBps <= BASIS_POINTS, "Invalid divergence");
         require(_maxCaptureRatio <= BASIS_POINTS, "Invalid capture ratio");
-        
+
         hookShareBps = _hookShareBps;
         minDivergenceBps = _minDivergenceBps;
         maxCaptureRatio = _maxCaptureRatio;
-        
+
         emit ConfigUpdated(_hookShareBps, _minDivergenceBps, _maxCaptureRatio);
     }
 }

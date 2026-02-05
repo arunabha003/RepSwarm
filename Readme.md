@@ -1,274 +1,155 @@
-# Swarm Protocol
+# Swarm Protocol (Uniswap v4 Hook + Agents)
 
-> **ETHGlobal HackMoney 2024** — An agent-driven MEV protection and redistribution layer built on Uniswap v4 hooks.
+Swarm is an on-chain MEV-protection and value-redistribution protocol built on **Uniswap v4 hooks**. It runs a set of specialized **agents** around each swap, captures value that would otherwise be extracted by external searchers, and redistributes value to LPs (and optionally a treasury) using a fee accumulator + donation flow.
 
-[![Solidity](https://img.shields.io/badge/Solidity-0.8.24-blue)](https://soliditylang.org/)
-[![Uniswap v4](https://img.shields.io/badge/Uniswap-v4-pink)](https://docs.uniswap.org/contracts/v4/overview)
-[![Foundry](https://img.shields.io/badge/Built%20with-Foundry-orange)](https://book.getfoundry.sh/)
-[![ERC-8004](https://img.shields.io/badge/ERC--8004-Compatible-green)](https://eips.ethereum.org/EIPS/eip-8004)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+This repo is designed to be runnable and verifiable on a **Sepolia fork** with **no mocked integrations in the E2E flow** (real Uniswap v4 `PoolManager`, real Chainlink feed, real Aave v3 pool, real ERC-8004 registries).
 
-## Overview
+## Status (Sepolia)
 
-Swarm Protocol is a **modular agent-driven system** that protects traders from MEV extraction while redistributing captured value to liquidity providers. Built on Uniswap v4 hooks, it uses specialized on-chain agents to analyze and optimize every swap.
+The protocol wiring is end-to-end functional on **Sepolia fork**:
 
-### How It Works
+- Hook deployment + pool initialization + liquidity.
+- Swap path with agents enabled.
+- Arbitrage capture (pre-swap capture).
+- Dynamic fee override.
+- MEV fee (post-swap output skim via hookData payload).
+- Backrun opportunity recording (after swap).
+- Backrun execution:
+- Keeper-capital mode (no flashloan).
+- Aave v3 flashloan mode (real Aave pool on Sepolia).
+- Coordinator intent flow (create intent -> proposals -> execute).
+- ERC-8004 identity enforcement and reputation enforcement against the official registries.
+- ERC-8004 feedback write on successful intent execution.
+- Agent hot-swap, backup agent failover, and reputation-based agent switching (admin driven).
 
-```
-User Swap → SwarmHook → AgentExecutor → [Agents] → MEV Capture → LP Distribution
-```
+What is not “automatic” on a live chain:
 
-1. **ArbitrageAgent** detects price divergence between pool and oracles
-2. **DynamicFeeAgent** calculates optimal fees based on volatility and MEV risk
-3. **BackrunAgent** identifies post-swap opportunities
-4. **LPFeeAccumulator** distributes captured value to liquidity providers
+- Backruns are recorded on-chain, but executing them still requires a keeper/bot to call the backrunner (or additional automation infrastructure you deploy).
 
-## Key Features
+## Components
 
-### 🤖 Agent-Driven Architecture
-- **Modular Agents**: Each agent specializes in one task
-- **Hot-Swappable**: Admins can replace agents without redeploying
-- **ERC-8004 Compatible**: Agents have on-chain identity and reputation
+Core contracts:
 
-### 🛡️ MEV Protection
-- **Arbitrage Capture**: Hook captures MEV instead of external bots
-- **Dynamic Fees**: Fees adjust based on MEV risk
-- **80% LP Share**: Majority of captured value goes to LPs
+- `src/hooks/SwarmHook.sol`: Uniswap v4 hook. Delegates decisions to `AgentExecutor` and applies MEV fee + capture accounting.
+- `src/agents/AgentExecutor.sol`: Registers agents, routes hook calls to agents, supports enable/disable, backups, and admin-driven reputation-based switching.
+- `src/agents/ArbitrageAgent.sol`: Detects oracle divergence and recommends pre-swap capture amount.
+- `src/agents/DynamicFeeAgent.sol`: Recommends fee override (v4 dynamic fee override).
+- `src/agents/BackrunAgent.sol`: Detects post-swap divergence and triggers backrun recording; can forward execution through `FlashLoanBackrunner`.
+- `src/backrun/FlashLoanBackrunner.sol`: Records opportunities and executes backruns either with keeper capital or via Aave v3 flashloan; distributes profits to LPs via `LPFeeAccumulator`.
+- `src/LPFeeAccumulator.sol`: Accumulates fees/profits per pool and donates to LPs (threshold + time window).
+- `src/oracles/OracleRegistry.sol`: Maps token pairs to Chainlink feeds and provides `getLatestPrice`.
+- `src/SwarmCoordinator.sol`: Intent-based routing coordinator. Adds ERC-8004 identity/reputation enforcement and writes reputation feedback for successful executions.
 
-### 💰 LP Fee Redistribution
-- **Real Donations**: Uses Uniswap v4's native `donate()` function
-- **Threshold-Based**: Batches fees for gas efficiency
-- **Transparent**: All flows trackable on-chain
+ERC-8004 integration:
 
-## Architecture
+- `src/erc8004/ERC8004Integration.sol`: Official registry addresses and helpers (Sepolia + Mainnet).
+- `src/erc8004/SwarmAgentRegistry.sol`: Helper for agent identity/reputation integration and feedback client authorization.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         SwarmHook                               │
-│  • beforeSwap() / afterSwap()                                  │
-│  • Delegates ALL logic to AgentExecutor                        │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       AgentExecutor                             │
-│  • Routes to registered agents                                 │
-│  • Hot-swap capability                                         │
-│  • Aggregates agent results                                    │
-└─────────┬─────────────────────┬─────────────────────┬───────────┘
-          │                     │                     │
-          ▼                     ▼                     ▼
-┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
-│ ArbitrageAgent  │   │ DynamicFeeAgent │   │  BackrunAgent   │
-│  MEV Detection  │   │  Fee Optimizer  │   │  Opportunity    │
-│  80% → LPs      │   │  Volatility     │   │  Detection      │
-│  ERC-8004 ID    │   │  ERC-8004 ID    │   │  ERC-8004 ID    │
-└─────────────────┘   └─────────────────┘   └─────────────────┘
-```
+## User Flows
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed system design.
+1) Direct swap with MEV fee
 
-## Project Structure
+- A user swaps through a pool whose `hooks` is `SwarmHook`.
+- If the user (or a router/coordinator) provides `hookData` (the `SwarmHookData` payload), the hook skims an MEV fee from the swap output, splits it between treasury and LP accumulator, and returns an `afterSwapReturnDelta` so the user receives output minus fee.
 
-```
-├── src/
-│   ├── hooks/
-│   │   └── SwarmHook.sol           # Main Uniswap v4 hook
-│   ├── agents/
-│   │   ├── AgentExecutor.sol       # Central agent routing
-│   │   ├── ArbitrageAgent.sol      # MEV detection & capture
-│   │   ├── DynamicFeeAgent.sol     # Fee optimization
-│   │   ├── BackrunAgent.sol        # Backrun opportunities
-│   │   └── base/
-│   │       └── SwarmAgentBase.sol  # Base agent class
-│   ├── interfaces/
-│   │   └── ISwarmAgent.sol         # Agent interface
-│   ├── oracles/
-│   │   └── OracleRegistry.sol      # Chainlink integration
-│   ├── LPFeeAccumulator.sol        # LP fee distribution
-│   └── SwarmCoordinator.sol        # Legacy coordinator
-├── script/
-│   ├── E2ETest.s.sol               # E2E deployment script
-│   └── DeploySwarmProtocol.s.sol   # Production deployment
-├── test/
-│   ├── E2ETest.t.sol               # Full E2E tests (14 tests)
-│   ├── AgentIntegration.t.sol      # Agent tests (11 tests)
-│   └── MevIntegration.t.sol        # MEV tests (5 tests)
-├── docs/
-│   └── PROTOCOL_EXPLAINED.md       # Protocol documentation
-└── frontend/                        # Next.js interface
-```
+2) Arbitrage capture (pre-swap)
 
-## Quick Start
+- In `beforeSwap`, `ArbitrageAgent` compares pool price vs oracle price and can recommend capturing a portion of input.
+- The hook `take()`s that input amount from `PoolManager` and routes it to:
+- Treasury (optional, via payload), and
+- LP accumulator (default path).
+- Swap continues with reduced effective input (hook returns a `BeforeSwapDelta` for exact-input swaps).
 
-### Prerequisites
+3) Dynamic fee override
 
-- [Foundry](https://book.getfoundry.sh/getting-started/installation)
-- Alchemy API key (for Sepolia fork)
+- In `beforeSwap`, `DynamicFeeAgent` can recommend an override fee.
+- Hook emits `FeeOverrideApplied` and returns the `LPFeeLibrary.OVERRIDE_FEE_FLAG`-encoded fee to `PoolManager`.
 
-### Installation
+4) Backrun detection + execution
+
+- In `afterSwap`, `BackrunAgent` compares the post-swap pool price to the oracle price.
+- When profitable divergence exists, the hook records the opportunity via `FlashLoanBackrunner.recordBackrunOpportunity(...)`.
+- Keepers can execute:
+- `executeBackrunWithCapital(...)` (uses keeper’s tokens), or
+- `executeBackrunPartial(...)` / `executeBackrun(...)` (Aave v3 flashloan).
+- Profit is distributed on-chain:
+- 80% to LPs through `LPFeeAccumulator.accumulateFees(...)` + donation flow.
+- 20% to keeper.
+
+5) Coordinator intent execution (multi-agent routing)
+
+- User creates an intent with candidate paths.
+- Registered route agents submit proposals for which candidate path to use.
+- Coordinator selects the best path (based on proposal scoring) and executes the swap through Uniswap v4, attaching Swarm hookData payload to every hop so MEV fee accounting is applied by the hook.
+- If configured, coordinator enforces:
+- ERC-8004 identity ownership/authorization for proposal submission.
+- ERC-8004 minimum reputation threshold (tag + clients configurable).
+- Coordinator writes ERC-8004 feedback (+1 WAD) on successful execution.
+
+## “No Mocks” Guarantee (E2E)
+
+The Sepolia E2E tests use real contracts on a Sepolia fork:
+
+- Uniswap v4 `PoolManager` (Sepolia deployment).
+- Aave v3 Pool (Sepolia deployment) for flashloans.
+- Chainlink ETH/USD feed (Sepolia deployment) for oracle pricing.
+- ERC-8004 Identity + Reputation registries (official Sepolia deployments).
+
+Test-only conveniences still exist (these do not mock protocol logic):
+
+- Forking and balance funding via Foundry cheatcodes for deterministic test setup.
+
+## Running Tests
+
+All tests:
 
 ```bash
-git clone https://github.com/your-repo/swarm-protocol.git
-cd swarm-protocol
-
-forge install
-forge build
+forge test -vvv
 ```
 
-### Run Tests
+Sepolia end-to-end suite (real integrations on fork):
 
 ```bash
-# E2E Tests (full protocol - recommended)
-SEPOLIA_RPC_URL="your-alchemy-url" forge test --match-contract E2ETest -vv
-
-# Agent Integration Tests
-forge test --match-contract AgentIntegrationTest -vv
-
-# MEV Integration Tests (fork required)
-SEPOLIA_RPC_URL="your-alchemy-url" forge test --match-contract MevIntegrationTest -vv
-
-# All tests
-SEPOLIA_RPC_URL="your-alchemy-url" forge test -vv
+forge test --match-contract E2ESepoliaTest -vvv
 ```
 
-### Test Results
+Mainnet end-to-end suite (disabled by default):
 
-```
-✅ E2ETest: 14 passed
-   - Protocol deployment verification
-   - Agent registration
-   - Multiple swaps
-   - Admin agent control
-   - Hot-swap agent
-   - ERC-8004 identity
-   - Liquidity operations
-   - Dynamic fee calculation
-   - Oracle integration
-   - Complete user journey
-
-✅ AgentIntegrationTest: 11 passed
-✅ MevIntegrationTest: 5 passed
-
-Total: 30 tests passing
+```bash
+RUN_MAINNET_E2E=true forge test --match-contract E2EMainnetTest -vvv
 ```
 
-## Agent System
+Important test files:
 
-### ArbitrageAgent
-
-Detects MEV opportunities by comparing pool prices to oracle prices.
-
-```solidity
-ArbitrageAgent(poolManager, owner, hookShareBps, minDivergenceBps)
-```
-
-- `hookShareBps`: LP share of captured value (default: 8000 = 80%)
-- `minDivergenceBps`: Minimum price divergence to trigger (default: 50 = 0.5%)
-
-### DynamicFeeAgent
-
-Calculates optimal fees based on market conditions.
-
-```solidity
-DynamicFeeAgent(poolManager, owner)
-```
-
-Fee factors:
-- Base fee: 0.30%
-- Volatility adjustment: up to 1.5x
-- Liquidity depth
-- MEV risk premium
-
-### BackrunAgent
-
-Analyzes post-swap state for backrun opportunities.
-
-```solidity
-BackrunAgent(poolManager, owner)
-```
-
-- Detects price divergence after large swaps
-- Routes 80% of profits to LPs via LPFeeAccumulator
+- `test/E2E_Sepolia.t.sol`: Full Sepolia fork E2E (includes flashloan + ERC-8004 enforcement).
+- `test/E2E_Mainnet.t.sol`: Mainnet fork E2E (gated by `RUN_MAINNET_E2E=true`).
+- `test/AgentExecutorFailover.t.sol`: Backup agent failover behavior (primary revert -> backup used).
+- `test/AgentExecutorReputationSwitch_Sepolia.t.sol`: Reputation-based switching against real ERC-8004 registries (Sepolia fork).
+- `test/MevIntegration.t.sol`: Additional integration coverage.
+- `test/SwarmUnit.t.sol`: Unit tests for utilities and registries.
 
 ## Admin Operations
 
-### Hot-Swap Agents
+Agent lifecycle:
 
-```solidity
-// Disable agent temporarily
-agentExecutor.setAgentEnabled(AgentType.ARBITRAGE, false);
+- Register/switch an agent: `AgentExecutor.registerAgent(agentType, agent)`
+- Set backup agent: `AgentExecutor.setBackupAgent(agentType, agent)`
+- Enable/disable: `AgentExecutor.setAgentEnabled(agentType, enabled)`
 
-// Re-enable
-agentExecutor.setAgentEnabled(AgentType.ARBITRAGE, true);
-```
+Reputation-based switching (admin initiated, off swap-path):
 
-### Replace Agent
+- Configure: `setReputationSwitchConfig(...)` + `setReputationSwitchClients(...)`
+- Switch if below threshold: `checkAndSwitchAgentIfBelowThreshold(agentType)`
 
-```solidity
-// Deploy new agent
-ArbitrageAgent newAgent = new ArbitrageAgent(poolManager, owner, 9000, 30);
+## Deployment
 
-// Register (replaces old)
-agentExecutor.registerAgent(AgentType.ARBITRAGE, address(newAgent));
-```
+Deployment scripts live in `script/`. For Sepolia deployment notes see:
 
-### Configure ERC-8004 Identity
+- `ETH_SEPOLIA_DEPLOYMENT.md`
+- `ARCHITECTURE.md`
 
-```solidity
-arbitrageAgent.configureIdentity(1001, ERC8004_IDENTITY_REGISTRY);
-```
+## Notes / Assumptions
 
-## Sepolia Addresses
+- Oracle pricing in E2E uses the Chainlink ETH/USD feed as a proxy for WETH/DAI (assuming DAI ~= USD). For production, configure pair-specific feeds or a safer composite oracle.
+- This repo is not an audit. Use at your own risk until formally reviewed.
 
-| Contract | Address |
-|----------|---------|
-| PoolManager | `0xE03A1074c86CFeDd5C142C4F04F1a1536e203543` |
-| ERC-8004 Identity | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
-| ERC-8004 Reputation | `0x8004B663056A597Dffe9eCcC1965A193B7388713` |
-| USDC (Aave) | `0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8` |
-| ETH/USD Chainlink | `0x694AA1769357215DE4FAC081bf1f309aDC325306` |
-
-## Documentation
-
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - Detailed system architecture
-- [docs/PROTOCOL_EXPLAINED.md](./docs/PROTOCOL_EXPLAINED.md) - Protocol mechanics
-- [ETH_SEPOLIA_DEPLOYMENT.md](./ETH_SEPOLIA_DEPLOYMENT.md) - Deployment guide
-
-## Development
-
-### Build
-
-```bash
-forge build
-```
-
-### Test
-
-```bash
-forge test
-```
-
-### Format
-
-```bash
-forge fmt
-```
-
-### Gas Report
-
-```bash
-forge test --gas-report
-```
-
-## License
-
-MIT License - see [LICENSE](./LICENSE) for details.
-
-## Acknowledgements
-
-- [Uniswap v4](https://docs.uniswap.org/contracts/v4/overview)
-- [Foundry](https://book.getfoundry.sh/)
-- [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)
-- [Chainlink](https://docs.chain.link/)
-- [ETHGlobal HackMoney](https://ethglobal.com/events/hackmoney2024)

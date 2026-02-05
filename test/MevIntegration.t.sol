@@ -43,7 +43,7 @@ contract MevIntegrationTest is Test {
     using StateLibrary for IPoolManager;
 
     // ============ Constants ============
-    
+
     address internal constant TREASURY = address(0xBEEF);
     address internal constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
@@ -51,13 +51,13 @@ contract MevIntegrationTest is Test {
         "https://eth-sepolia.g.alchemy.com/v2/KywLaq2zlVzePOhip0BY3U8ztfHkYDmo";
 
     address internal constant DEFAULT_POOL_MANAGER = 0x8C4BcBE6b9eF47855f97E675296FA3F6fafa5F1A;
-    
+
     uint160 internal constant SQRT_PRICE_1_1 = 79228162514264337593543950336; // 1:1 price
     uint160 internal constant SQRT_PRICE_1_2 = 56022770974786139918731938227; // 1:2 price (50% cheaper)
     uint160 internal constant SQRT_PRICE_2_1 = 112045541949572279837463876454; // 2:1 price (50% more expensive)
 
     // ============ Test Contracts ============
-    
+
     IPoolManager internal poolManager;
     SwarmHook internal hook;
     AgentExecutor internal executor;
@@ -109,23 +109,17 @@ contract MevIntegrationTest is Test {
             poolManager,
             address(this),
             8000, // 80% hook share
-            50    // 0.5% min divergence
+            50 // 0.5% min divergence
         );
 
-        feeAgent = new DynamicFeeAgent(
-            poolManager,
-            address(this)
-        );
+        feeAgent = new DynamicFeeAgent(poolManager, address(this));
 
-        backrunAgent = new BackrunAgent(
-            poolManager,
-            address(this)
-        );
+        backrunAgent = new BackrunAgent(poolManager, address(this));
         backrunAgent.setLPFeeAccumulator(address(lpAccumulator));
 
         // Deploy executor
         executor = new AgentExecutor();
-        
+
         // Register agents
         executor.registerAgent(AgentType.ARBITRAGE, address(arbAgent));
         executor.registerAgent(AgentType.DYNAMIC_FEE, address(feeAgent));
@@ -158,23 +152,14 @@ contract MevIntegrationTest is Test {
 
     function _deployHook() internal {
         uint160 flags = uint160(
-            Hooks.BEFORE_SWAP_FLAG |
-                Hooks.AFTER_SWAP_FLAG |
-                Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
-                Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
 
-        bytes memory constructorArgs = abi.encode(
-            poolManager, 
-            address(this)
-        );
+        bytes memory constructorArgs = abi.encode(poolManager, address(this));
 
-        (address hookAddress, bytes32 salt) = HookMiner.find(
-            CREATE2_DEPLOYER,
-            flags,
-            type(SwarmHook).creationCode,
-            constructorArgs
-        );
+        (address hookAddress, bytes32 salt) =
+            HookMiner.find(CREATE2_DEPLOYER, flags, type(SwarmHook).creationCode, constructorArgs);
 
         bytes memory deploymentData = abi.encodePacked(type(SwarmHook).creationCode, constructorArgs);
         bytes memory callData = abi.encodePacked(salt, deploymentData);
@@ -186,21 +171,19 @@ contract MevIntegrationTest is Test {
         require(deployedAddress == hookAddress, "Hook address mismatch");
 
         hook = SwarmHook(payable(deployedAddress));
-        
+
         // Configure hook with agents
         hook.setAgentExecutor(address(executor));
         hook.setOracleRegistry(address(oracleRegistry));
         hook.setLPFeeAccumulator(address(lpAccumulator));
-        
+
         // Authorize hook in executor
         executor.authorizeHook(address(hook), true);
     }
 
     function _initPoolAndLiquidity() internal {
-        (Currency currency0, Currency currency1) = _sortCurrencies(
-            Currency.wrap(address(tokenA)),
-            Currency.wrap(address(tokenB))
-        );
+        (Currency currency0, Currency currency1) =
+            _sortCurrencies(Currency.wrap(address(tokenA)), Currency.wrap(address(tokenB)));
 
         poolKey = PoolKey({
             currency0: currency0,
@@ -224,12 +207,7 @@ contract MevIntegrationTest is Test {
 
         liquidityRouter.modifyLiquidity(
             poolKey,
-            ModifyLiquidityParams({
-                tickLower: -60000,
-                tickUpper: 60000,
-                liquidityDelta: 1000 ether,
-                salt: bytes32(0)
-            }),
+            ModifyLiquidityParams({tickLower: -60000, tickUpper: 60000, liquidityDelta: 1000 ether, salt: bytes32(0)}),
             ""
         );
     }
@@ -240,7 +218,7 @@ contract MevIntegrationTest is Test {
         tokenA.mint(bob, 1000 ether);
         tokenA.mint(attacker, 10000 ether);
         tokenA.mint(victim, 100 ether);
-        
+
         tokenB.mint(alice, 1000 ether);
         tokenB.mint(bob, 1000 ether);
         tokenB.mint(attacker, 10000 ether);
@@ -276,21 +254,16 @@ contract MevIntegrationTest is Test {
 
     function test_NormalSwapWithAgents() public {
         vm.prank(alice);
-        
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
 
-        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings({
-            takeClaims: false,
-            settleUsingBurn: false
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
 
         // Execute swap - agents should analyze and process
         swapRouter.swap(poolKey, params, settings, "");
-        
+
         // Swap should complete successfully
         assertTrue(true);
     }
@@ -298,21 +271,19 @@ contract MevIntegrationTest is Test {
     function test_DynamicFeeIsApplied() public {
         // Make a large swap that should trigger higher fees
         vm.prank(alice);
-        
+
         SwapParams memory params = SwapParams({
             zeroForOne: true,
             amountSpecified: -100 ether, // Large swap
             sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
-        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings({
-            takeClaims: false,
-            settleUsingBurn: false
-        });
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
 
         // Execute swap
         swapRouter.swap(poolKey, params, settings, "");
-        
+
         // Fee agent should have been consulted
         assertTrue(feeAgent.isActive());
     }
@@ -320,7 +291,7 @@ contract MevIntegrationTest is Test {
     function test_AgentExecutorReceivesSwapContext() public {
         // Verify executor is configured
         assertEq(address(hook.agentExecutor()), address(executor));
-        
+
         // Verify agents are registered
         assertEq(executor.agents(AgentType.ARBITRAGE), address(arbAgent));
         assertEq(executor.agents(AgentType.DYNAMIC_FEE), address(feeAgent));
@@ -333,30 +304,25 @@ contract MevIntegrationTest is Test {
             poolManager,
             address(this),
             8000, // 80% hook share
-            50    // 0.5% min divergence
+            50 // 0.5% min divergence
         );
-        
+
         // Hot-swap the agent
         executor.registerAgent(AgentType.ARBITRAGE, address(newArbAgent));
         newArbAgent.authorizeCaller(address(hook), true);
         newArbAgent.authorizeCaller(address(executor), true);
-        
+
         // Verify swap
         assertEq(executor.agents(AgentType.ARBITRAGE), address(newArbAgent));
-        
+
         // Swap should still work with new agent
         vm.prank(alice);
-        
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
 
-        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings({
-            takeClaims: false,
-            settleUsingBurn: false
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
 
         swapRouter.swap(poolKey, params, settings, "");
     }
@@ -364,23 +330,18 @@ contract MevIntegrationTest is Test {
     function test_DisablingAgentAffectsSwaps() public {
         // Disable fee agent
         executor.setAgentEnabled(AgentType.DYNAMIC_FEE, false);
-        
+
         // Swap should still work (graceful degradation)
         vm.prank(alice);
-        
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
 
-        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings({
-            takeClaims: false,
-            settleUsingBurn: false
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
 
         swapRouter.swap(poolKey, params, settings, "");
-        
+
         // Re-enable
         executor.setAgentEnabled(AgentType.DYNAMIC_FEE, true);
     }

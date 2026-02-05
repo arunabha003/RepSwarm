@@ -64,10 +64,7 @@ abstract contract SwarmAgentBase is ISwarmAgent, Ownable {
 
     // ============ Constructor ============
 
-    constructor(
-        IPoolManager _poolManager,
-        address _owner
-    ) Ownable(_owner) {
+    constructor(IPoolManager _poolManager, address _owner) Ownable(_owner) {
         poolManager = _poolManager;
         active = true;
         confidence = 80; // Default confidence
@@ -91,16 +88,25 @@ abstract contract SwarmAgentBase is ISwarmAgent, Ownable {
     }
 
     /// @inheritdoc ISwarmAgent
-    function execute(
-        SwapContext calldata context
-    ) external virtual override onlyAuthorized whenActive returns (AgentResult memory result) {
+    function execute(SwapContext calldata context)
+        external
+        virtual
+        override
+        onlyAuthorized
+        whenActive
+        returns (AgentResult memory result)
+    {
         return _execute(context);
     }
 
     /// @inheritdoc ISwarmAgent
-    function getRecommendation(
-        SwapContext calldata context
-    ) external view virtual override returns (AgentResult memory result) {
+    function getRecommendation(SwapContext calldata context)
+        external
+        view
+        virtual
+        override
+        returns (AgentResult memory result)
+    {
         return _getRecommendation(context);
     }
 
@@ -117,10 +123,7 @@ abstract contract SwarmAgentBase is ISwarmAgent, Ownable {
     /// @notice Configure ERC-8004 identity
     /// @param _agentId The ERC-8004 identity token ID
     /// @param _identityRegistry The identity registry address
-    function configureIdentity(
-        uint256 _agentId,
-        address _identityRegistry
-    ) external onlyOwner {
+    function configureIdentity(uint256 _agentId, address _identityRegistry) external onlyOwner {
         agentId = _agentId;
         identityRegistry = _identityRegistry;
         emit IdentityConfigured(_agentId, _identityRegistry);

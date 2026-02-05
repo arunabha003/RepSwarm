@@ -43,13 +43,10 @@ contract SwarmUnitTest is Test {
         assertEq(decoded.lpShareBps, original.lpShareBps);
     }
 
-    function test_hookDataFuzz(
-        uint256 intentId,
-        uint24 mevFee,
-        address treasury,
-        uint16 treasuryBps,
-        uint16 lpShareBps
-    ) public pure {
+    function test_hookDataFuzz(uint256 intentId, uint24 mevFee, address treasury, uint16 treasuryBps, uint16 lpShareBps)
+        public
+        pure
+    {
         SwarmHookData.Payload memory original = SwarmHookData.Payload({
             intentId: intentId,
             agentId: 1,
@@ -73,19 +70,19 @@ contract SwarmUnitTest is Test {
 
     function test_oracleRegistry_setPriceFeed() public {
         address mockFeed = address(0x3333);
-        
+
         oracleRegistry.setPriceFeed(tokenA, tokenB, mockFeed);
-        
+
         address retrievedFeed = oracleRegistry.getPriceFeed(tokenA, tokenB);
         assertEq(retrievedFeed, mockFeed);
     }
 
     function test_oracleRegistry_setPriceFeed_reverseQuery() public {
         address mockFeed = address(0x3333);
-        
+
         // Set feed for A->B
         oracleRegistry.setPriceFeed(tokenA, tokenB, mockFeed);
-        
+
         // Should also be queryable via B->A (reverse lookup)
         address retrievedFeed = oracleRegistry.getPriceFeed(tokenB, tokenA);
         assertEq(retrievedFeed, mockFeed);
@@ -133,7 +130,7 @@ contract SwarmUnitTest is Test {
 
     function test_oracleRegistry_onlyOwnerCanSetFeed() public {
         address attacker = address(0xBAD);
-        
+
         vm.prank(attacker);
         vm.expectRevert();
         oracleRegistry.setPriceFeed(tokenA, tokenB, address(0x3333));

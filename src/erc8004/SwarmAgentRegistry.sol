@@ -48,12 +48,7 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
 
     // ============ Events ============
 
-    event AgentRegistered(
-        address indexed agentContract,
-        uint256 indexed agentId,
-        string name,
-        string agentType
-    );
+    event AgentRegistered(address indexed agentContract, uint256 indexed agentId, string name, string agentType);
 
     event AgentDeactivated(address indexed agentContract, uint256 indexed agentId);
     event AgentReactivated(address indexed agentContract, uint256 indexed agentId);
@@ -70,17 +65,23 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
 
     // ============ Constructor ============
 
-    constructor(
-        address _identityRegistry,
-        address _reputationRegistry
-    ) Ownable(msg.sender) {
-        if (_identityRegistry == address(0)) {
-            // Default to Sepolia addresses
+    constructor(address _identityRegistry, address _reputationRegistry) Ownable(msg.sender) {
+        if (_identityRegistry != address(0)) {
+            identityRegistry = IERC8004IdentityRegistry(_identityRegistry);
+            reputationRegistry = IERC8004ReputationRegistry(_reputationRegistry);
+            return;
+        }
+
+        // Default registries by chain.
+        if (block.chainid == 1) {
+            identityRegistry = IERC8004IdentityRegistry(ERC8004Integration.MAINNET_IDENTITY_REGISTRY);
+            reputationRegistry = IERC8004ReputationRegistry(ERC8004Integration.MAINNET_REPUTATION_REGISTRY);
+        } else if (block.chainid == 11155111) {
             identityRegistry = IERC8004IdentityRegistry(ERC8004Integration.SEPOLIA_IDENTITY_REGISTRY);
             reputationRegistry = IERC8004ReputationRegistry(ERC8004Integration.SEPOLIA_REPUTATION_REGISTRY);
         } else {
-            identityRegistry = IERC8004IdentityRegistry(_identityRegistry);
-            reputationRegistry = IERC8004ReputationRegistry(_reputationRegistry);
+            // For other chains, force explicit configuration.
+            revert ZeroAddress();
         }
     }
 
@@ -102,7 +103,7 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
     ) external onlyOwner nonReentrant returns (uint256 agentId) {
         if (agentContract == address(0)) revert ZeroAddress();
         if (agentIdentities[agentContract] != 0) revert AgentAlreadyRegistered(agentContract);
-        
+
         // Validate agent type
         if (!_isValidAgentType(agentType)) revert InvalidAgentType();
 
@@ -111,21 +112,13 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
 
         // Build metadata entries
         IERC8004IdentityRegistry.MetadataEntry[] memory metadata = new IERC8004IdentityRegistry.MetadataEntry[](4);
-        metadata[0] = IERC8004IdentityRegistry.MetadataEntry({
-            metadataKey: "agentType",
-            metadataValue: bytes(agentType)
-        });
-        metadata[1] = IERC8004IdentityRegistry.MetadataEntry({
-            metadataKey: "protocol",
-            metadataValue: bytes("swarm-mev-router")
-        });
-        metadata[2] = IERC8004IdentityRegistry.MetadataEntry({
-            metadataKey: "version",
-            metadataValue: bytes(version)
-        });
+        metadata[0] =
+            IERC8004IdentityRegistry.MetadataEntry({metadataKey: "agentType", metadataValue: bytes(agentType)});
+        metadata[1] =
+            IERC8004IdentityRegistry.MetadataEntry({metadataKey: "protocol", metadataValue: bytes("swarm-mev-router")});
+        metadata[2] = IERC8004IdentityRegistry.MetadataEntry({metadataKey: "version", metadataValue: bytes(version)});
         metadata[3] = IERC8004IdentityRegistry.MetadataEntry({
-            metadataKey: "contractAddress",
-            metadataValue: abi.encodePacked(agentContract)
+            metadataKey: "contractAddress", metadataValue: abi.encodePacked(agentContract)
         });
 
         // Register on ERC-8004 Identity Registry
@@ -163,10 +156,7 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
         if (agentIdentities[agentContract] != 0) revert AgentAlreadyRegistered(agentContract);
 
         // Verify this contract is authorized for the agent ID
-        require(
-            identityRegistry.isAuthorizedOrOwner(address(this), agentId),
-            "Not authorized for agent"
-        );
+        require(identityRegistry.isAuthorizedOrOwner(address(this), agentId), "Not authorized for agent");
 
         agentIdentities[agentContract] = agentId;
         agentContracts[agentId] = agentContract;
@@ -206,15 +196,11 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
     /// @param agentContract The agent contract address
     /// @param value Feedback value in WAD (can be negative)
     /// @param tag Feedback category tag
-    function giveFeedback(
-        address agentContract,
-        int128 value,
-        string calldata tag
-    ) external {
+    function giveFeedback(address agentContract, int128 value, string calldata tag) external {
         if (!authorizedFeedbackClients[msg.sender] && msg.sender != owner()) {
             revert UnauthorizedFeedbackClient();
         }
-        
+
         uint256 agentId = agentIdentities[agentContract];
         if (agentId == 0) revert AgentNotRegistered(agentContract);
 
@@ -224,8 +210,8 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
             ERC8004Integration.REPUTATION_DECIMALS,
             ERC8004Integration.TAG_SWARM_ROUTING,
             tag,
-            "",  // endpoint
-            "",  // feedbackURI
+            "", // endpoint
+            "", // feedbackURI
             bytes32(0) // feedbackHash
         );
     }
@@ -247,12 +233,8 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
         address[] memory clients = reputationRegistry.getClients(agentId);
         if (clients.length == 0) return (0, 0, 2); // Neutral tier for new agents
 
-        (uint64 feedbackCount, int128 summaryValue, uint8 decimals) = reputationRegistry.getSummary(
-            agentId,
-            clients,
-            ERC8004Integration.TAG_SWARM_ROUTING,
-            ""
-        );
+        (uint64 feedbackCount, int128 summaryValue, uint8 decimals) =
+            reputationRegistry.getSummary(agentId, clients, ERC8004Integration.TAG_SWARM_ROUTING, "");
 
         reputationWad = ERC8004Integration.normalizeToWad(summaryValue, decimals);
         tier = ERC8004Integration.getReputationTier(reputationWad);
@@ -269,12 +251,8 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
         address[] memory clients = reputationRegistry.getClients(agentId);
         if (clients.length == 0) return 1e18; // Neutral weight for new agents
 
-        (uint64 count, int128 summaryValue, uint8 decimals) = reputationRegistry.getSummary(
-            agentId,
-            clients,
-            ERC8004Integration.TAG_SWARM_ROUTING,
-            ""
-        );
+        (uint64 count, int128 summaryValue, uint8 decimals) =
+            reputationRegistry.getSummary(agentId, clients, ERC8004Integration.TAG_SWARM_ROUTING, "");
 
         if (count == 0) return 1e18;
 
@@ -293,10 +271,7 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
     // ============ Configuration ============
 
     /// @notice Update registry addresses
-    function setRegistries(
-        address _identityRegistry,
-        address _reputationRegistry
-    ) external onlyOwner {
+    function setRegistries(address _identityRegistry, address _reputationRegistry) external onlyOwner {
         if (_identityRegistry != address(0)) {
             identityRegistry = IERC8004IdentityRegistry(_identityRegistry);
         }
@@ -341,12 +316,8 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
 
     function _isValidAgentType(string calldata agentType) internal pure returns (bool) {
         bytes32 typeHash = keccak256(bytes(agentType));
-        return (
-            typeHash == keccak256("fee-optimizer") ||
-            typeHash == keccak256("mev-hunter") ||
-            typeHash == keccak256("slippage-predictor") ||
-            typeHash == keccak256("generic")
-        );
+        return (typeHash == keccak256("fee-optimizer") || typeHash == keccak256("mev-hunter")
+                || typeHash == keccak256("slippage-predictor") || typeHash == keccak256("generic"));
     }
 
     function _buildAgentURI(
@@ -358,15 +329,27 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
     ) internal pure returns (string memory) {
         // In production, this would return an IPFS URI or similar
         // For now, we return a data URI placeholder
-        return string(abi.encodePacked(
-            "data:application/json,{",
-            '"name":"', name, '",',
-            '"description":"', description, '",',
-            '"agentType":"', agentType, '",',
-            '"version":"', version, '",',
-            '"contract":"', _addressToString(agentContract), '"',
-            "}"
-        ));
+        return string(
+            abi.encodePacked(
+                "data:application/json,{",
+                '"name":"',
+                name,
+                '",',
+                '"description":"',
+                description,
+                '",',
+                '"agentType":"',
+                agentType,
+                '",',
+                '"version":"',
+                version,
+                '",',
+                '"contract":"',
+                _addressToString(agentContract),
+                '"',
+                "}"
+            )
+        );
     }
 
     function _addressToString(address addr) internal pure returns (string memory) {

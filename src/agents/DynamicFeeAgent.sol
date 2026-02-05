@@ -55,24 +55,17 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
 
     // ============ Events ============
 
-    event ConfigUpdated(
-        uint24 baseFee,
-        uint256 volatilityMultiplier,
-        uint256 lowLiquidityMultiplier
-    );
+    event ConfigUpdated(uint24 baseFee, uint256 volatilityMultiplier, uint256 lowLiquidityMultiplier);
     event VolatilityUpdated(bytes32 indexed poolId, uint256 volatility);
 
     // ============ Constructor ============
 
-    constructor(
-        IPoolManager _poolManager,
-        address _owner
-    ) SwarmAgentBase(_poolManager, _owner) {
-        baseFee = 3000;              // 0.30%
+    constructor(IPoolManager _poolManager, address _owner) SwarmAgentBase(_poolManager, _owner) {
+        baseFee = 3000; // 0.30%
         volatilityMultiplier = 15000; // 1.5x for high volatility
         lowLiquidityMultiplier = 20000; // 2x for low liquidity
-        mevRiskThreshold = 50;       // 0.5% divergence
-        mevFeePremium = 2000;        // 0.2% additional
+        mevRiskThreshold = 50; // 0.5% divergence
+        mevFeePremium = 2000; // 0.2% additional
     }
 
     // ============ ISwarmAgent Implementation ============
@@ -83,11 +76,9 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
     }
 
     /// @inheritdoc SwarmAgentBase
-    function _execute(
-        SwapContext calldata context
-    ) internal override returns (AgentResult memory result) {
+    function _execute(SwapContext calldata context) internal override returns (AgentResult memory result) {
         FeeResult memory feeResult = _calculateFee(context);
-        
+
         result.shouldAct = feeResult.useOverride;
         result.value = feeResult.recommendedFee;
         result.secondaryValue = feeResult.mevRisk;
@@ -95,11 +86,14 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
     }
 
     /// @inheritdoc SwarmAgentBase
-    function _getRecommendation(
-        SwapContext calldata context
-    ) internal view override returns (AgentResult memory result) {
+    function _getRecommendation(SwapContext calldata context)
+        internal
+        view
+        override
+        returns (AgentResult memory result)
+    {
         FeeResult memory feeResult = _calculateFee(context);
-        
+
         result.shouldAct = feeResult.useOverride;
         result.value = feeResult.recommendedFee;
         result.secondaryValue = feeResult.mevRisk;
@@ -109,18 +103,14 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
     // ============ IDynamicFeeAgent Implementation ============
 
     /// @inheritdoc IDynamicFeeAgent
-    function calculateFee(
-        SwapContext calldata context
-    ) external view override returns (FeeResult memory result) {
+    function calculateFee(SwapContext calldata context) external view override returns (FeeResult memory result) {
         return _calculateFee(context);
     }
 
     // ============ Core Logic ============
 
     /// @notice Calculate optimal fee - THE CORE LOGIC
-    function _calculateFee(
-        SwapContext calldata context
-    ) internal view returns (FeeResult memory result) {
+    function _calculateFee(SwapContext calldata context) internal view returns (FeeResult memory result) {
         result.recommendedFee = baseFee;
         result.useOverride = false;
 
@@ -134,11 +124,8 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
 
         // 2. Calculate MEV risk based on price divergence
         if (context.oraclePrice > 0 && context.poolPrice > 0) {
-            uint256 divergenceBps = _calculateDivergenceBps(
-                context.poolPrice,
-                context.oraclePrice
-            );
-            
+            uint256 divergenceBps = _calculateDivergenceBps(context.poolPrice, context.oraclePrice);
+
             result.mevRisk = divergenceBps;
 
             // If divergence exceeds threshold, add MEV premium
@@ -151,17 +138,14 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
         // 3. Check volatility (if tracked)
         bytes32 poolIdBytes = bytes32(PoolId.unwrap(context.poolId));
         uint256 volatility = poolVolatility[poolIdBytes];
-        
+
         if (volatility > 0) {
             result.volatility = volatility;
-            
+
             // High volatility (>50) increases fee
             if (volatility > 50) {
-                uint256 feeIncrease = FullMath.mulDiv(
-                    result.recommendedFee,
-                    volatilityMultiplier - BASIS_POINTS,
-                    BASIS_POINTS
-                );
+                uint256 feeIncrease =
+                    FullMath.mulDiv(result.recommendedFee, volatilityMultiplier - BASIS_POINTS, BASIS_POINTS);
                 result.recommendedFee += uint24(feeIncrease);
                 result.useOverride = true;
             }
@@ -170,19 +154,13 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
         // 4. Low liquidity multiplier (not as extreme as threshold)
         uint128 mediumLiquidity = MIN_SAFE_LIQUIDITY * 10;
         if (context.liquidity < mediumLiquidity && context.liquidity >= MIN_SAFE_LIQUIDITY) {
-            uint256 liquidityRatio = FullMath.mulDiv(
-                uint256(context.liquidity),
-                BASIS_POINTS,
-                uint256(mediumLiquidity)
-            );
-            
+            uint256 liquidityRatio = FullMath.mulDiv(uint256(context.liquidity), BASIS_POINTS, uint256(mediumLiquidity));
+
             // Scale fee inversely with liquidity
-            uint256 feeMultiplier = lowLiquidityMultiplier - 
-                FullMath.mulDiv(liquidityRatio, lowLiquidityMultiplier - BASIS_POINTS, BASIS_POINTS);
-            
-            result.recommendedFee = uint24(
-                FullMath.mulDiv(result.recommendedFee, feeMultiplier, BASIS_POINTS)
-            );
+            uint256 feeMultiplier = lowLiquidityMultiplier
+                - FullMath.mulDiv(liquidityRatio, lowLiquidityMultiplier - BASIS_POINTS, BASIS_POINTS);
+
+            result.recommendedFee = uint24(FullMath.mulDiv(result.recommendedFee, feeMultiplier, BASIS_POINTS));
             result.useOverride = true;
         }
 
@@ -198,12 +176,9 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
     }
 
     /// @notice Calculate price divergence in basis points
-    function _calculateDivergenceBps(
-        uint256 poolPrice,
-        uint256 oraclePrice
-    ) internal pure returns (uint256) {
+    function _calculateDivergenceBps(uint256 poolPrice, uint256 oraclePrice) internal pure returns (uint256) {
         if (oraclePrice == 0) return 0;
-        
+
         if (poolPrice > oraclePrice) {
             return FullMath.mulDiv(poolPrice - oraclePrice, BASIS_POINTS, oraclePrice);
         } else {
@@ -216,10 +191,7 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
     /// @notice Update volatility for a pool (called by keeper/oracle)
     /// @param poolId The pool identifier
     /// @param volatility Volatility score (0-100)
-    function updateVolatility(
-        bytes32 poolId,
-        uint256 volatility
-    ) external onlyAuthorized {
+    function updateVolatility(bytes32 poolId, uint256 volatility) external onlyAuthorized {
         require(volatility <= 100, "Invalid volatility");
         poolVolatility[poolId] = volatility;
         lastVolatilityUpdate[poolId] = block.timestamp;
@@ -238,13 +210,13 @@ contract DynamicFeeAgent is SwarmAgentBase, IDynamicFeeAgent {
     ) external onlyOwner {
         require(_baseFee <= MAX_FEE, "Invalid base fee");
         require(_mevFeePremium <= MAX_FEE, "Invalid premium");
-        
+
         baseFee = _baseFee;
         volatilityMultiplier = _volatilityMultiplier;
         lowLiquidityMultiplier = _lowLiquidityMultiplier;
         mevRiskThreshold = _mevRiskThreshold;
         mevFeePremium = _mevFeePremium;
-        
+
         emit ConfigUpdated(_baseFee, _volatilityMultiplier, _lowLiquidityMultiplier);
     }
 }

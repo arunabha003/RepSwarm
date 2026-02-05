@@ -10,11 +10,11 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
 /// @notice Types of agents supported by the protocol
 enum AgentType {
-    ARBITRAGE,      // Detects and captures MEV/arbitrage
-    DYNAMIC_FEE,    // Calculates optimal swap fees
-    BACKRUN,        // Executes backrun opportunities
-    LIQUIDITY,      // Manages liquidity optimization
-    ORACLE          // Provides price data
+    ARBITRAGE, // Detects and captures MEV/arbitrage
+    DYNAMIC_FEE, // Calculates optimal swap fees
+    BACKRUN, // Executes backrun opportunities
+    LIQUIDITY, // Manages liquidity optimization
+    ORACLE // Provides price data
 }
 
 /// @notice Context passed to agent for decision making
@@ -22,24 +22,24 @@ struct SwapContext {
     PoolKey poolKey;
     PoolId poolId;
     SwapParams params;
-    uint256 poolPrice;          // Current pool price
-    uint256 oraclePrice;        // Oracle reference price
-    uint256 oracleConfidence;   // Oracle confidence interval
-    uint128 liquidity;          // Current pool liquidity
-    bytes hookData;             // Additional hook data
+    uint256 poolPrice; // Current pool price
+    uint256 oraclePrice; // Oracle reference price
+    uint256 oracleConfidence; // Oracle confidence interval
+    uint128 liquidity; // Current pool liquidity
+    bytes hookData; // Additional hook data
 }
 
 /// @notice Result from agent execution
 struct AgentResult {
     AgentType agentType;
     bool success;
-    bool shouldAct;             // Whether agent recommends action
-    uint256 value;              // Primary value (fee, amount, etc.)
-    uint256 secondaryValue;     // Secondary value if needed
+    bool shouldAct; // Whether agent recommends action
+    uint256 value; // Primary value (fee, amount, etc.)
+    uint256 secondaryValue; // Secondary value if needed
     int256 delta0;
     int256 delta1;
     uint24 feeOverride;
-    bytes data;                 // Additional data for complex actions
+    bytes data; // Additional data for complex actions
 }
 
 /// @title ISwarmAgent
@@ -82,19 +82,17 @@ interface ISwarmAgent {
 interface IArbitrageAgent is ISwarmAgent {
     /// @notice Arbitrage-specific result
     struct ArbitrageResult {
-        bool shouldCapture;         // Whether to capture arbitrage
-        uint256 arbitrageAmount;    // Total arbitrage opportunity
-        uint256 hookShare;          // Amount for hook/LPs
-        uint256 divergenceBps;      // Price divergence in bps
-        bool isOutsideConfidence;   // Outside oracle confidence band
+        bool shouldCapture; // Whether to capture arbitrage
+        uint256 arbitrageAmount; // Total arbitrage opportunity
+        uint256 hookShare; // Amount for hook/LPs
+        uint256 divergenceBps; // Price divergence in bps
+        bool isOutsideConfidence; // Outside oracle confidence band
     }
 
     /// @notice Analyze arbitrage opportunity for a swap
     /// @param context The swap context
     /// @return result Detailed arbitrage analysis
-    function analyzeArbitrage(
-        SwapContext calldata context
-    ) external view returns (ArbitrageResult memory result);
+    function analyzeArbitrage(SwapContext calldata context) external view returns (ArbitrageResult memory result);
 }
 
 /// @title IDynamicFeeAgent
@@ -102,18 +100,16 @@ interface IArbitrageAgent is ISwarmAgent {
 interface IDynamicFeeAgent is ISwarmAgent {
     /// @notice Fee recommendation result
     struct FeeResult {
-        uint24 recommendedFee;      // Fee in hundredths of bps
-        uint256 mevRisk;            // MEV risk score (0-100)
-        uint256 volatility;         // Volatility score (0-100)
-        bool useOverride;           // Whether to override pool fee
+        uint24 recommendedFee; // Fee in hundredths of bps
+        uint256 mevRisk; // MEV risk score (0-100)
+        uint256 volatility; // Volatility score (0-100)
+        bool useOverride; // Whether to override pool fee
     }
 
     /// @notice Calculate recommended fee for a swap
     /// @param context The swap context
     /// @return result Detailed fee recommendation
-    function calculateFee(
-        SwapContext calldata context
-    ) external view returns (FeeResult memory result);
+    function calculateFee(SwapContext calldata context) external view returns (FeeResult memory result);
 }
 
 /// @title IBackrunAgent
@@ -121,29 +117,28 @@ interface IDynamicFeeAgent is ISwarmAgent {
 interface IBackrunAgent is ISwarmAgent {
     /// @notice Backrun opportunity details
     struct BackrunOpportunity {
-        bool shouldBackrun;         // Whether backrun is profitable
-        uint256 backrunAmount;      // Optimal backrun size
-        uint256 expectedProfit;     // Expected profit
-        bool zeroForOne;            // Backrun direction
-        uint256 targetPrice;        // Target price to restore
+        bool shouldBackrun; // Whether backrun is profitable
+        uint256 backrunAmount; // Optimal backrun size
+        uint256 expectedProfit; // Expected profit
+        bool zeroForOne; // Backrun direction
+        uint256 targetPrice; // Target price to restore
     }
 
     /// @notice Analyze backrun opportunity after a swap
     /// @param context The swap context
     /// @param newPoolPrice Pool price after swap
     /// @return opportunity Backrun analysis
-    function analyzeBackrun(
-        SwapContext calldata context,
-        uint256 newPoolPrice
-    ) external view returns (BackrunOpportunity memory opportunity);
+    function analyzeBackrun(SwapContext calldata context, uint256 newPoolPrice)
+        external
+        view
+        returns (BackrunOpportunity memory opportunity);
 
     /// @notice Execute a backrun (requires flash loan or capital)
     /// @param context The swap context
     /// @param opportunity The backrun opportunity
     /// @return success Whether backrun executed successfully
     /// @return profit Actual profit captured
-    function executeBackrun(
-        SwapContext calldata context,
-        BackrunOpportunity calldata opportunity
-    ) external returns (bool success, uint256 profit);
+    function executeBackrun(SwapContext calldata context, BackrunOpportunity calldata opportunity)
+        external
+        returns (bool success, uint256 profit);
 }

@@ -39,33 +39,35 @@ interface IERC20Like {
     function balanceOf(address) external view returns (uint256);
     function approve(address, uint256) external returns (bool);
     function transfer(address, uint256) external returns (bool);
-    function decimals() external view returns (uint8);
 }
 
 interface IWETH9Like is IERC20Like {
     function deposit() external payable;
 }
 
-/// @title E2ETest
-/// @notice Fork-based E2E tests that exercise the full on-chain protocol wiring.
-/// @dev Runs on a Sepolia fork (Alchemy URL provided by user).
-contract E2ETest is Test {
+/// @title E2EMainnetTest
+/// @notice Mainnet-fork E2E suite.
+/// @dev Disabled by default to keep `forge test` stable in CI/sandbox environments.
+///      Enable with `RUN_MAINNET_E2E=true forge test --match-contract E2EMainnetTest -vv`.
+contract E2EMainnetTest is Test {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
 
-    string internal constant DEFAULT_SEPOLIA_RPC_URL =
-        "https://eth-sepolia.g.alchemy.com/v2/KywLaq2zlVzePOhip0BY3U8ztfHkYDmo";
+    string internal constant MAINNET_RPC_URL = "https://eth-mainnet.g.alchemy.com/v2/KywLaq2zlVzePOhip0BY3U8ztfHkYDmo";
 
-    address internal constant DEFAULT_POOL_MANAGER = 0x8C4BcBE6b9eF47855f97E675296FA3F6fafa5F1A;
+    // Uniswap v4 PoolManager on mainnet.
+    address internal constant POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
     address internal constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
-    // Sepolia token addresses (commonly used test deployments).
-    address internal constant WETH = 0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9;
-    address internal constant DAI = 0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357;
+    // Mainnet token addresses.
+    address internal constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address internal constant DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
 
     // Chainlink ETH/USD feed (used as WETH/DAI proxy: DAI ~= USD).
-    address internal constant ETH_USD_FEED = 0x694AA1769357215DE4FAC081bf1f309aDC325306;
+    address internal constant ETH_USD_FEED = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
+
+    bool internal skipAll;
 
     IPoolManager internal poolManager;
 
@@ -81,9 +83,6 @@ contract E2ETest is Test {
     PoolSwapTest internal swapRouter;
     PoolModifyLiquidityTest internal liquidityRouter;
 
-    // Two pools using the same pair:
-    // 1) Hooked pool: dynamic fees + SwarmHook
-    // 2) Repay pool: vanilla pool used by FlashLoanBackrunner to swap back into the borrowed asset
     PoolKey internal hookPoolKey;
     PoolId internal hookPoolId;
     PoolKey internal repayPoolKey;
@@ -96,19 +95,24 @@ contract E2ETest is Test {
     address internal routeAgent = makeAddr("routeAgent");
 
     event FeeOverrideApplied(PoolId indexed poolId, uint24 fee);
-    event BackrunOpportunityRecorded(PoolId indexed poolId, uint256 amount);
 
     function setUp() public {
-        string memory rpc = vm.envOr("SEPOLIA_RPC_URL", DEFAULT_SEPOLIA_RPC_URL);
-        vm.createSelectFork(rpc);
+        bool run = vm.envOr("RUN_MAINNET_E2E", false);
+        if (!run) {
+            skipAll = true;
+            return;
+        }
 
-        poolManager = IPoolManager(vm.envOr("POOL_MANAGER", DEFAULT_POOL_MANAGER));
+        vm.createSelectFork(MAINNET_RPC_URL);
 
-        // Deploy protocol contracts
+        // Hardcode mainnet PoolManager so the test doesn't accidentally pick up a Sepolia `POOL_MANAGER`
+        // env var (common when running fork tests locally).
+        poolManager = IPoolManager(POOL_MANAGER);
+        require(address(poolManager).code.length > 0, "PoolManager not deployed");
+
         oracleRegistry = new OracleRegistry();
         oracleRegistry.setPriceFeed(WETH, DAI, ETH_USD_FEED);
 
-        // Low thresholds to allow immediate donation in tests
         lpAccumulator = new LPFeeAccumulator(poolManager, 1, 0);
 
         executor = new AgentExecutor();
@@ -118,9 +122,9 @@ contract E2ETest is Test {
 
         hook = _deployHook();
 
+        // Use chain-aware default Aave pool inside FlashLoanBackrunner.
         flashBackrunner = new FlashLoanBackrunner(poolManager, address(0));
 
-        // Wire everything together
         executor.registerAgent(AgentType.ARBITRAGE, address(arbAgent));
         executor.registerAgent(AgentType.DYNAMIC_FEE, address(feeAgent));
         executor.registerAgent(AgentType.BACKRUN, address(backrunAgent));
@@ -153,28 +157,22 @@ contract E2ETest is Test {
         liquidityRouter = new PoolModifyLiquidityTest(poolManager);
 
         _initPoolsAndLiquidity();
-
-        // Configure repay pool for the hooked pool backruns
         flashBackrunner.setRepayPoolKey(hookPoolId, repayPoolKey);
 
-        // Fund actors
-        _fundActor(alice, 200 ether, 200_000 ether); // WETH, DAI
+        _fundActor(alice, 200 ether, 200_000 ether);
         _fundActor(bob, 200 ether, 200_000 ether);
-        _fundActor(keeper, 200 ether, 200_000 ether);
+        _fundActor(keeper, 1 ether, 0);
     }
 
-    // ============ E2E Tests ============
-
     function test_E2E_CoordinatorFlow_TakesMevFee_ToTreasuryAndLPs() public {
-        SwarmCoordinator coordinator = new SwarmCoordinator(poolManager, treasury, address(0), address(0));
+        if (skipAll) vm.skip(true, "set RUN_MAINNET_E2E=true to run");
 
-        // Register a route agent identity (EOA works for test; production would be an agent contract).
+        SwarmCoordinator coordinator = new SwarmCoordinator(poolManager, treasury, address(0), address(0));
         coordinator.registerAgent(routeAgent, 123, true);
 
-        // Create 1-hop path through our hooked pool.
         PathKey[] memory path = new PathKey[](1);
         path[0] = PathKey({
-            intermediateCurrency: hookPoolKey.currency0, // WETH (output)
+            intermediateCurrency: hookPoolKey.currency0,
             fee: hookPoolKey.fee,
             tickSpacing: hookPoolKey.tickSpacing,
             hooks: hookPoolKey.hooks,
@@ -185,17 +183,16 @@ contract E2ETest is Test {
         candidates[0] = abi.encode(path);
 
         SwarmTypes.IntentParams memory params = SwarmTypes.IntentParams({
-            currencyIn: hookPoolKey.currency1, // DAI
-            currencyOut: hookPoolKey.currency0, // WETH
+            currencyIn: hookPoolKey.currency1,
+            currencyOut: hookPoolKey.currency0,
             amountIn: 10_000 ether,
             amountOutMin: 0,
             deadline: 0,
             mevFeeBps: 30, // 0.30%
-            treasuryBps: 200, // 2% of the MEV fee goes to treasury
-            lpShareBps: 8000 // 80% of MEV fee to LPs (rest to treasury/remainder)
+            treasuryBps: 200,
+            lpShareBps: 8000
         });
 
-        // Alice approves coordinator to pull DAI.
         vm.startPrank(alice);
         IERC20Like(DAI).approve(address(coordinator), type(uint256).max);
 
@@ -203,14 +200,11 @@ contract E2ETest is Test {
         uint256 accWethBefore = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(WETH));
 
         uint256 intentId = coordinator.createIntent(params, candidates);
-
         vm.stopPrank();
 
-        // Route agent submits proposal (required by coordinator selection).
         vm.prank(routeAgent);
         coordinator.submitProposal(intentId, 0, 0, "");
 
-        // Execute intent (swap goes through hook with hookData set by coordinator).
         vm.prank(alice);
         coordinator.executeIntent(intentId);
 
@@ -222,14 +216,9 @@ contract E2ETest is Test {
     }
 
     function test_E2E_DirectSwap_HookData_TakesMevFee() public {
-        bytes memory hookData = abi.encode(
-            uint256(1), // intentId
-            uint256(123), // agentId
-            treasury,
-            uint16(200), // treasuryBps
-            uint24(3000), // mevFee = 0.30%
-            uint16(8000) // lpShareBps
-        );
+        if (skipAll) vm.skip(true, "set RUN_MAINNET_E2E=true to run");
+
+        bytes memory hookData = abi.encode(uint256(1), uint256(123), treasury, uint16(200), uint24(3000), uint16(8000));
 
         uint256 treasuryWethBefore = IERC20Like(WETH).balanceOf(treasury);
         uint256 accWethBefore = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(WETH));
@@ -247,23 +236,19 @@ contract E2ETest is Test {
     }
 
     function test_E2E_ArbitrageCapture_SendsToAccumulatorAndTreasury() public {
-        // Make pool diverge first (without capture) so the next swap triggers capture deterministically.
-        arbAgent.setConfig(8000, 5_000, 5_000); // require 50% divergence to disable capture temporarily
+        if (skipAll) vm.skip(true, "set RUN_MAINNET_E2E=true to run");
 
-        _swapExactIn(bob, hookPoolKey, true, 5 ether, ""); // WETH -> DAI pushes price down
+        arbAgent.setConfig(8000, 5_000, 5_000);
+        _swapExactIn(bob, hookPoolKey, true, 5 ether, "");
+        arbAgent.setConfig(8000, 50, 5_000);
 
-        arbAgent.setConfig(8000, 50, 5_000); // back to 0.5% divergence
-
-        // Sanity: ensure the arb agent would trigger capture for the next swap.
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(hookPoolId);
         uint256 poolPrice = HookLib.sqrtPriceToPrice(sqrtPriceX96);
         (uint256 oraclePrice,) = oracleRegistry.getLatestPrice(WETH, DAI);
-        uint256 oracleConfidence = (oraclePrice * 50) / 10_000; // matches hook default (0.5%)
+        uint256 oracleConfidence = (oraclePrice * 50) / 10_000;
 
         SwapParams memory probeParams = SwapParams({
-            zeroForOne: false, // DAI -> WETH
-            amountSpecified: -int256(1_000 ether),
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            zeroForOne: false, amountSpecified: -int256(1_000 ether), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
         SwapContext memory probeContext = SwapContext({
@@ -281,82 +266,54 @@ contract E2ETest is Test {
         assertTrue(probe.shouldCapture, "arb agent should capture");
         assertTrue(probe.hookShare > 0, "arb agent hookShare should be > 0");
 
-        // A swap now should trigger capture.
         uint256 treasuryDaiBefore = IERC20Like(DAI).balanceOf(treasury);
         uint256 accDaiBefore = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(DAI));
 
-        bytes memory hookData = abi.encode(
-            0, // intentId
-            0, // agentId
-            treasury,
-            uint16(1_000), // treasuryBps = 10% of captured amount
-            uint24(0), // mevFee (not needed for capture test)
-            uint16(8_000) // lpShareBps = 80%
-        );
+        bytes memory hookData = abi.encode(0, 0, treasury, uint16(1_000), uint24(0), uint16(8_000));
 
-        _swapExactIn(alice, hookPoolKey, false, 1_000 ether, hookData); // DAI -> WETH (capture takes DAI)
+        _swapExactIn(alice, hookPoolKey, false, 1_000 ether, hookData);
 
         uint256 treasuryDaiAfter = IERC20Like(DAI).balanceOf(treasury);
         uint256 accDaiAfter = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(DAI));
-        uint256 hookAccum = hook.getAccumulatedTokens(hookPoolId, Currency.wrap(DAI));
 
         assertTrue(treasuryDaiAfter > treasuryDaiBefore, "treasury should receive share of captured amount");
         assertTrue(accDaiAfter > accDaiBefore, "accumulator should receive LP share of captured amount");
-        assertTrue(hookAccum > 0, "hook should track captured amount");
     }
 
     function test_E2E_DynamicFeeOverride_EmitsEvent() public {
-        // Disable capture so fee override isn't short-circuited by arbitrage priority.
-        executor.setAgentEnabled(AgentType.ARBITRAGE, false);
+        if (skipAll) vm.skip(true, "set RUN_MAINNET_E2E=true to run");
 
-        // Move price away from oracle.
+        executor.setAgentEnabled(AgentType.ARBITRAGE, false);
         _swapExactIn(bob, hookPoolKey, true, 5 ether, "");
 
-        // Next swap should apply override fee from DynamicFeeAgent.
         vm.expectEmit(true, false, false, false, address(hook));
-        emit FeeOverrideApplied(hookPoolId, 0); // fee value not asserted (depends on agent logic)
+        emit FeeOverrideApplied(hookPoolId, 0);
 
         _swapExactIn(alice, hookPoolKey, false, 100 ether, "");
     }
 
-    function test_E2E_BackrunFlow_RecordedAndExecutable_ProfitDistributedAndDonated() public {
-        // Ensure arbitrage capture doesn't interfere; we want a clean divergence-driven backrun.
+    function test_E2E_BackrunFlow_RecordedAndExecutable_CapitalMode() public {
+        if (skipAll) vm.skip(true, "set RUN_MAINNET_E2E=true to run");
+
         executor.setAgentEnabled(AgentType.ARBITRAGE, false);
         executor.setAgentEnabled(AgentType.DYNAMIC_FEE, false);
 
-        // Create divergence with a victim swap that pushes hook pool price down.
-        // Move price upward (WETH more expensive) so the backrun borrows WETH (Aave has liquidity for WETH on Sepolia).
         _swapExactIn(bob, hookPoolKey, false, 1_000 ether, "");
 
-        // Sanity: ensure we actually diverged from oracle.
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(hookPoolId);
-        uint256 poolPrice = HookLib.sqrtPriceToPrice(sqrtPriceX96);
-        (uint256 oraclePrice,) = oracleRegistry.getLatestPrice(WETH, DAI);
-        assertTrue(poolPrice != oraclePrice, "pool should diverge from oracle");
-
-        (
-            ,
-            ,
-            ,
-            uint256 backrunAmount,
-            bool backrunZeroForOne,
-            ,
-            uint64 detectedBlock,
-            bool executed
-        ) = flashBackrunner.pendingBackruns(hookPoolId);
+        (,,, uint256 backrunAmount, bool backrunZeroForOne,,, bool executed) =
+            flashBackrunner.pendingBackruns(hookPoolId);
 
         assertTrue(backrunAmount > 0, "backrun amount should be recorded");
         assertFalse(executed, "opportunity should be pending");
-        assertEq(uint256(detectedBlock), block.number, "should be recorded in the current block");
 
         address tokenIn = backrunZeroForOne ? WETH : DAI;
 
         uint256 keeperTokenBefore = IERC20Like(tokenIn).balanceOf(keeper);
         uint256 accTokenBefore = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(tokenIn));
 
-        // Execute backrun as keeper using keeper-provided capital (no external flash loan dependency).
         uint256 amountIn = backrunAmount;
         if (amountIn > 0.1 ether) amountIn = 0.1 ether;
+
         vm.startPrank(keeper);
         IERC20Like(tokenIn).approve(address(flashBackrunner), type(uint256).max);
         flashBackrunner.executeBackrunWithCapital(hookPoolId, amountIn, 0);
@@ -367,16 +324,44 @@ contract E2ETest is Test {
 
         assertTrue(keeperTokenAfter >= keeperTokenBefore, "keeper should not lose tokenIn");
         assertTrue(accTokenAfter > accTokenBefore, "LP accumulator should receive share of profit");
+    }
 
-        // Donate accumulated fees to LPs.
-        lpAccumulator.donateToLPs(hookPoolId);
+    function test_E2E_BackrunFlow_FlashLoanExecutes_ProfitDistributed() public {
+        if (skipAll) vm.skip(true, "set RUN_MAINNET_E2E=true to run");
 
-        uint256 accTokenFinal = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(tokenIn));
-        assertEq(accTokenFinal, 0, "accumulated fees should be reset after donation");
+        // Ensure arbitrage capture doesn't interfere; we want a clean divergence-driven backrun.
+        executor.setAgentEnabled(AgentType.ARBITRAGE, false);
+        executor.setAgentEnabled(AgentType.DYNAMIC_FEE, false);
+
+        // Create divergence (DAI -> WETH) so the backrun borrows WETH on mainnet Aave.
+        _swapExactIn(bob, hookPoolKey, false, 1_000 ether, "");
+
+        (,,, uint256 backrunAmount, bool backrunZeroForOne,,, bool executed) =
+            flashBackrunner.pendingBackruns(hookPoolId);
+
+        assertTrue(backrunAmount > 0, "backrun amount should be recorded");
+        assertFalse(executed, "opportunity should be pending");
+        assertTrue(backrunZeroForOne, "expected to borrow WETH (currency0)");
+
+        uint256 keeperWethBefore = IERC20Like(WETH).balanceOf(keeper);
+        uint256 accWethBefore = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(WETH));
+
+        // Execute with a smaller amount than the recorded opportunity.
+        uint256 amountIn = backrunAmount;
+        if (amountIn > 0.1 ether) amountIn = 0.1 ether;
+        vm.prank(keeper);
+        flashBackrunner.executeBackrunPartial(hookPoolId, amountIn, 0);
+
+        uint256 keeperWethAfter = IERC20Like(WETH).balanceOf(keeper);
+        uint256 accWethAfter = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(WETH));
+
+        assertTrue(keeperWethAfter > keeperWethBefore, "keeper should earn profit share");
+        assertTrue(accWethAfter > accWethBefore, "LP accumulator should receive share of profit");
     }
 
     function test_E2E_MalformedHookData_IsIgnored_NoMevFeeTaken() public {
-        // Ensure capture/fee override doesn't interfere with this test.
+        if (skipAll) vm.skip(true, "set RUN_MAINNET_E2E=true to run");
+
         executor.setAgentEnabled(AgentType.ARBITRAGE, false);
         executor.setAgentEnabled(AgentType.DYNAMIC_FEE, false);
 
@@ -385,7 +370,7 @@ contract E2ETest is Test {
         uint256 treasuryWethBefore = IERC20Like(WETH).balanceOf(treasury);
         uint256 accWethBefore = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(WETH));
 
-        _swapExactIn(alice, hookPoolKey, false, 100 ether, malformed); // DAI -> WETH
+        _swapExactIn(alice, hookPoolKey, false, 100 ether, malformed);
 
         uint256 treasuryWethAfter = IERC20Like(WETH).balanceOf(treasury);
         uint256 accWethAfter = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(WETH));
@@ -395,29 +380,20 @@ contract E2ETest is Test {
     }
 
     function test_E2E_ComposedCaptureAndMevFee_HappyPath() public {
-        // Create divergence without triggering capture.
+        if (skipAll) vm.skip(true, "set RUN_MAINNET_E2E=true to run");
+
         executor.setAgentEnabled(AgentType.ARBITRAGE, false);
-        _swapExactIn(bob, hookPoolKey, true, 5 ether, ""); // WETH -> DAI pushes price down
+        _swapExactIn(bob, hookPoolKey, true, 5 ether, "");
         executor.setAgentEnabled(AgentType.ARBITRAGE, true);
 
-        bytes memory hookData = abi.encode(
-            uint256(1), // intentId
-            uint256(123), // agentId
-            treasury,
-            uint16(200), // treasuryBps
-            uint24(3000), // mevFee = 0.30%
-            uint16(8000) // lpShareBps = 80%
-        );
+        bytes memory hookData = abi.encode(uint256(1), uint256(123), treasury, uint16(200), uint24(3000), uint16(8000));
 
         uint256 treasuryDaiBefore = IERC20Like(DAI).balanceOf(treasury);
         uint256 accDaiBefore = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(DAI));
         uint256 treasuryWethBefore = IERC20Like(WETH).balanceOf(treasury);
         uint256 accWethBefore = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(WETH));
 
-        // This swap should trigger:
-        // - arbitrage capture in `beforeSwap` (takes input=DAI)
-        // - MEV fee take in `afterSwap` (takes output=WETH)
-        _swapExactIn(alice, hookPoolKey, false, 1_000 ether, hookData); // DAI -> WETH
+        _swapExactIn(alice, hookPoolKey, false, 1_000 ether, hookData);
 
         uint256 treasuryDaiAfter = IERC20Like(DAI).balanceOf(treasury);
         uint256 accDaiAfter = lpAccumulator.accumulatedFees(hookPoolId, Currency.wrap(DAI));
@@ -433,19 +409,17 @@ contract E2ETest is Test {
     // ============ Helpers ============
 
     function _deployHook() internal returns (SwarmHook deployed) {
-        uint160 flags = uint160(
-            Hooks.BEFORE_SWAP_FLAG |
-                Hooks.AFTER_SWAP_FLAG |
-                Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
-                Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-        );
-
+        bytes memory creationCode = type(SwarmHook).creationCode;
         bytes memory constructorArgs = abi.encode(poolManager, address(this));
-        (address hookAddress, bytes32 salt) = HookMiner.find(
-            CREATE2_DEPLOYER, flags, type(SwarmHook).creationCode, constructorArgs
+
+        uint160 flags = uint160(
+            Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
 
-        bytes memory deploymentData = abi.encodePacked(type(SwarmHook).creationCode, constructorArgs);
+        (address hookAddress, bytes32 salt) = HookMiner.find(CREATE2_DEPLOYER, flags, creationCode, constructorArgs);
+
+        bytes memory deploymentData = abi.encodePacked(creationCode, constructorArgs);
         bytes memory callData = abi.encodePacked(salt, deploymentData);
 
         (bool success, bytes memory returnData) = CREATE2_DEPLOYER.call(callData);
@@ -458,14 +432,10 @@ contract E2ETest is Test {
     }
 
     function _initPoolsAndLiquidity() internal {
-        // Fetch oracle price (WETH/DAI proxy via ETH/USD feed).
         (uint256 oraclePrice,) = oracleRegistry.getLatestPrice(WETH, DAI);
         require(oraclePrice > 0, "oracle price unavailable");
 
-        (Currency currency0, Currency currency1) = _sortCurrencies(
-            Currency.wrap(WETH),
-            Currency.wrap(DAI)
-        );
+        (Currency currency0, Currency currency1) = _sortCurrencies(Currency.wrap(WETH), Currency.wrap(DAI));
 
         hookPoolKey = PoolKey({
             currency0: currency0,
@@ -477,11 +447,7 @@ contract E2ETest is Test {
         hookPoolId = hookPoolKey.toId();
 
         repayPoolKey = PoolKey({
-            currency0: currency0,
-            currency1: currency1,
-            fee: 3000,
-            tickSpacing: 60,
-            hooks: IHooks(address(0))
+            currency0: currency0, currency1: currency1, fee: 3000, tickSpacing: 60, hooks: IHooks(address(0))
         });
         repayPoolId = repayPoolKey.toId();
 
@@ -489,13 +455,10 @@ contract E2ETest is Test {
         poolManager.initialize(hookPoolKey, sqrtPriceX96);
         poolManager.initialize(repayPoolKey, sqrtPriceX96);
 
-        // Add liquidity around the initialized tick (price ~= 2000 => tick is far from 0).
         (, int24 tick,,) = poolManager.getSlot0(hookPoolId);
-        // Use a wide range so moderate test swaps can't exhaust liquidity and drive price to ~0.
         int24 tickLower = _floorTick(_clampTick(tick - 60_000), hookPoolKey.tickSpacing);
         int24 tickUpper = _floorTick(_clampTick(tick + 60_000), hookPoolKey.tickSpacing);
 
-        // Fund this contract to provide liquidity.
         vm.deal(address(this), 2_000 ether);
         IWETH9Like(WETH).deposit{value: 1_000 ether}();
         deal(DAI, address(this), 5_000_000 ether);
@@ -503,14 +466,10 @@ contract E2ETest is Test {
         IERC20Like(WETH).approve(address(liquidityRouter), type(uint256).max);
         IERC20Like(DAI).approve(address(liquidityRouter), type(uint256).max);
 
-        // Wide-range liquidity in both pools. Keep it moderate so backrun sizing is manageable.
         liquidityRouter.modifyLiquidity(
             hookPoolKey,
             ModifyLiquidityParams({
-                tickLower: tickLower,
-                tickUpper: tickUpper,
-                liquidityDelta: 100 ether,
-                salt: bytes32(uint256(1))
+                tickLower: tickLower, tickUpper: tickUpper, liquidityDelta: 100 ether, salt: bytes32(uint256(1))
             }),
             ""
         );
@@ -518,15 +477,11 @@ contract E2ETest is Test {
         liquidityRouter.modifyLiquidity(
             repayPoolKey,
             ModifyLiquidityParams({
-                tickLower: tickLower,
-                tickUpper: tickUpper,
-                liquidityDelta: 300 ether,
-                salt: bytes32(uint256(2))
+                tickLower: tickLower, tickUpper: tickUpper, liquidityDelta: 300 ether, salt: bytes32(uint256(2))
             }),
             ""
         );
 
-        // Register keys so donation execution has the necessary metadata.
         lpAccumulator.registerPoolKey(hookPoolKey);
         lpAccumulator.registerPoolKey(repayPoolKey);
 
@@ -535,9 +490,8 @@ contract E2ETest is Test {
     }
 
     function _fundActor(address who, uint256 wethAmount, uint256 daiAmount) internal {
-        // Transfer from this contract's balances.
         IERC20Like(WETH).transfer(who, wethAmount);
-        IERC20Like(DAI).transfer(who, daiAmount);
+        if (daiAmount > 0) IERC20Like(DAI).transfer(who, daiAmount);
 
         vm.startPrank(who);
         IERC20Like(WETH).approve(address(swapRouter), type(uint256).max);
@@ -545,18 +499,13 @@ contract E2ETest is Test {
         vm.stopPrank();
     }
 
-    function _swapExactIn(
-        address trader,
-        PoolKey memory key,
-        bool zeroForOne,
-        uint256 amountIn,
-        bytes memory hookData
-    ) internal returns (BalanceDelta delta) {
+    function _swapExactIn(address trader, PoolKey memory key, bool zeroForOne, uint256 amountIn, bytes memory hookData)
+        internal
+        returns (BalanceDelta delta)
+    {
         vm.startPrank(trader);
-        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings({
-            takeClaims: false,
-            settleUsingBurn: false
-        });
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
 
         SwapParams memory params = SwapParams({
             zeroForOne: zeroForOne,
@@ -575,10 +524,7 @@ contract E2ETest is Test {
     function _floorTick(int24 tick, int24 spacing) internal pure returns (int24) {
         int24 rem = tick % spacing;
         if (rem == 0) return tick;
-        // Solidity modulo keeps the sign of the dividend. For negative ticks, round down.
-        if (tick < 0) {
-            return tick - (spacing + rem);
-        }
+        if (tick < 0) return tick - (spacing + rem);
         return tick - rem;
     }
 

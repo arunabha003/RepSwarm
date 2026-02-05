@@ -44,6 +44,10 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
     /// @notice Optional flash-loan executor (Aave v3) for real backrun execution
     FlashLoanBackrunner public flashBackrunner;
 
+    /// @notice Optional clamp on flash-loan execution size (0 = no clamp)
+    /// @dev In production this should be set based on expected liquidity (Aave + pools) and risk tolerance.
+    uint256 public maxFlashLoanAmount;
+
     /// @notice Share of profit going to LPs (basis points)
     uint256 public lpShareBps;
 
@@ -67,31 +71,21 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
     // ============ Events ============
 
     event BackrunOpportunityDetected(
-        bytes32 indexed poolId,
-        uint256 backrunAmount,
-        uint256 expectedProfit,
-        bool zeroForOne
+        bytes32 indexed poolId, uint256 backrunAmount, uint256 expectedProfit, bool zeroForOne
     );
 
-    event BackrunExecuted(
-        bytes32 indexed poolId,
-        uint256 profit,
-        uint256 lpShare,
-        address executor
-    );
+    event BackrunExecuted(bytes32 indexed poolId, uint256 profit, uint256 lpShare, address executor);
 
     event ConfigUpdated(uint256 lpShareBps, uint256 minDivergenceBps);
     event FlashBackrunnerSet(address indexed backrunner);
+    event MaxFlashLoanAmountSet(uint256 amount);
 
     // ============ Constructor ============
 
-    constructor(
-        IPoolManager _poolManager,
-        address _owner
-    ) SwarmAgentBase(_poolManager, _owner) {
-        lpShareBps = 8000;        // 80% to LPs
-        minDivergenceBps = 30;    // 0.3% minimum divergence
-        maxOpportunityAge = 2;    // 2 blocks max
+    constructor(IPoolManager _poolManager, address _owner) SwarmAgentBase(_poolManager, _owner) {
+        lpShareBps = 8000; // 80% to LPs
+        minDivergenceBps = 30; // 0.3% minimum divergence
+        maxOpportunityAge = 2; // 2 blocks max
     }
 
     // ============ ISwarmAgent Implementation ============
@@ -102,28 +96,23 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
     }
 
     /// @inheritdoc SwarmAgentBase
-    function _execute(
-        SwapContext calldata context
-    ) internal override returns (AgentResult memory result) {
+    function _execute(SwapContext calldata context) internal override returns (AgentResult memory result) {
         // For execute, we analyze and store the opportunity
         BackrunOpportunity memory opportunity = _analyzeBackrun(
             context,
             context.poolPrice // Use current price as "new" price in execute context
         );
-        
+
         if (opportunity.shouldBackrun) {
             bytes32 poolIdBytes = bytes32(PoolId.unwrap(context.poolId));
             pendingOpportunities[poolIdBytes] = opportunity;
             opportunityTimestamp[poolIdBytes] = block.number;
-            
+
             emit BackrunOpportunityDetected(
-                poolIdBytes,
-                opportunity.backrunAmount,
-                opportunity.expectedProfit,
-                opportunity.zeroForOne
+                poolIdBytes, opportunity.backrunAmount, opportunity.expectedProfit, opportunity.zeroForOne
             );
         }
-        
+
         result.shouldAct = opportunity.shouldBackrun;
         result.value = opportunity.backrunAmount;
         result.secondaryValue = opportunity.expectedProfit;
@@ -131,14 +120,14 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
     }
 
     /// @inheritdoc SwarmAgentBase
-    function _getRecommendation(
-        SwapContext calldata context
-    ) internal view override returns (AgentResult memory result) {
-        BackrunOpportunity memory opportunity = _analyzeBackrun(
-            context,
-            context.poolPrice
-        );
-        
+    function _getRecommendation(SwapContext calldata context)
+        internal
+        view
+        override
+        returns (AgentResult memory result)
+    {
+        BackrunOpportunity memory opportunity = _analyzeBackrun(context, context.poolPrice);
+
         result.shouldAct = opportunity.shouldBackrun;
         result.value = opportunity.backrunAmount;
         result.secondaryValue = opportunity.expectedProfit;
@@ -148,29 +137,39 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
     // ============ IBackrunAgent Implementation ============
 
     /// @inheritdoc IBackrunAgent
-    function analyzeBackrun(
-        SwapContext calldata context,
-        uint256 newPoolPrice
-    ) external view override returns (BackrunOpportunity memory opportunity) {
+    function analyzeBackrun(SwapContext calldata context, uint256 newPoolPrice)
+        external
+        view
+        override
+        returns (BackrunOpportunity memory opportunity)
+    {
         return _analyzeBackrun(context, newPoolPrice);
     }
 
     /// @inheritdoc IBackrunAgent
-    function executeBackrun(
-        SwapContext calldata context,
-        BackrunOpportunity calldata opportunity
-    ) external override onlyAuthorized returns (bool success, uint256 profit) {
+    function executeBackrun(SwapContext calldata context, BackrunOpportunity calldata opportunity)
+        external
+        override
+        onlyAuthorized
+        returns (bool success, uint256 profit)
+    {
         // Real execution path: delegate to a flash-loan executor that performs the swaps
         // and distributes profits via LPFeeAccumulator.
         if (address(flashBackrunner) == address(0)) {
             return (false, 0);
         }
 
-        // Use a conservative floor so we don't execute for dust; keepers can still choose to call
-        // the FlashLoanBackrunner directly with custom parameters.
-        uint256 minProfit = opportunity.expectedProfit > 0 ? opportunity.expectedProfit / 10 : 0;
+        uint256 amount = opportunity.backrunAmount;
+        if (maxFlashLoanAmount != 0 && amount > maxFlashLoanAmount) {
+            amount = maxFlashLoanAmount;
+        }
 
-        try flashBackrunner.executeBackrunFor(context.poolId, minProfit, msg.sender) {
+        // IMPORTANT: expectedProfit is an estimate; use a zero floor and let the backrunner enforce
+        // "repay principal + premium" on-chain. Keepers who want stricter thresholds can call the
+        // FlashLoanBackrunner directly with a custom minProfit.
+        uint256 minProfit = 0;
+
+        try flashBackrunner.executeBackrunPartialFor(context.poolId, amount, minProfit, msg.sender) {
             // Profit is emitted by the backrunner and tracked there; returning 0 keeps this
             // interface non-blocking while still ensuring execution is real.
             return (true, 0);
@@ -183,10 +182,11 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
     // ============ Core Logic ============
 
     /// @notice Analyze backrun opportunity - THE CORE LOGIC
-    function _analyzeBackrun(
-        SwapContext calldata context,
-        uint256 newPoolPrice
-    ) internal view returns (BackrunOpportunity memory opportunity) {
+    function _analyzeBackrun(SwapContext calldata context, uint256 newPoolPrice)
+        internal
+        view
+        returns (BackrunOpportunity memory opportunity)
+    {
         // Need valid prices
         if (context.oraclePrice == 0 || newPoolPrice == 0) {
             return opportunity;
@@ -195,17 +195,9 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
         // Calculate divergence after swap
         uint256 divergenceBps;
         if (newPoolPrice > context.oraclePrice) {
-            divergenceBps = FullMath.mulDiv(
-                newPoolPrice - context.oraclePrice,
-                BASIS_POINTS,
-                context.oraclePrice
-            );
+            divergenceBps = FullMath.mulDiv(newPoolPrice - context.oraclePrice, BASIS_POINTS, context.oraclePrice);
         } else {
-            divergenceBps = FullMath.mulDiv(
-                context.oraclePrice - newPoolPrice,
-                BASIS_POINTS,
-                context.oraclePrice
-            );
+            divergenceBps = FullMath.mulDiv(context.oraclePrice - newPoolPrice, BASIS_POINTS, context.oraclePrice);
         }
 
         // Check if worth backrunning
@@ -219,12 +211,8 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
         opportunity.targetPrice = context.oraclePrice;
 
         // Calculate backrun amount to restore price
-        opportunity.backrunAmount = _calculateBackrunAmount(
-            newPoolPrice,
-            context.oraclePrice,
-            context.liquidity,
-            backrunZeroForOne
-        );
+        opportunity.backrunAmount =
+            _calculateBackrunAmount(newPoolPrice, context.oraclePrice, context.liquidity, backrunZeroForOne);
 
         if (opportunity.backrunAmount == 0) {
             return opportunity;
@@ -238,29 +226,20 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
             priceDiff = context.oraclePrice - newPoolPrice;
         }
 
-        opportunity.expectedProfit = FullMath.mulDiv(
-            opportunity.backrunAmount,
-            priceDiff,
-            PRICE_PRECISION
-        );
+        opportunity.expectedProfit = FullMath.mulDiv(opportunity.backrunAmount, priceDiff, PRICE_PRECISION);
 
         // Check if profitable after gas/slippage
-        uint256 minProfit = FullMath.mulDiv(
-            opportunity.backrunAmount,
-            MIN_PROFIT_BPS,
-            BASIS_POINTS
-        );
+        uint256 minProfit = FullMath.mulDiv(opportunity.backrunAmount, MIN_PROFIT_BPS, BASIS_POINTS);
 
         opportunity.shouldBackrun = opportunity.expectedProfit > minProfit;
     }
 
     /// @notice Calculate optimal backrun amount
-    function _calculateBackrunAmount(
-        uint256 poolPrice,
-        uint256 oraclePrice,
-        uint128 liquidity,
-        bool zeroForOne
-    ) internal pure returns (uint256 backrunAmount) {
+    function _calculateBackrunAmount(uint256 poolPrice, uint256 oraclePrice, uint128 liquidity, bool zeroForOne)
+        internal
+        pure
+        returns (uint256 backrunAmount)
+    {
         if (liquidity == 0 || poolPrice == 0 || oraclePrice == 0) {
             return 0;
         }
@@ -279,19 +258,11 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
         }
 
         // Amount ≈ liquidity * priceDiff / oraclePrice
-        backrunAmount = FullMath.mulDiv(
-            uint256(liquidity),
-            priceDiff,
-            oraclePrice
-        );
+        backrunAmount = FullMath.mulDiv(uint256(liquidity), priceDiff, oraclePrice);
 
         // Cap at maximum ratio
-        uint256 maxBackrun = FullMath.mulDiv(
-            uint256(liquidity),
-            MAX_BACKRUN_RATIO,
-            BASIS_POINTS
-        );
-        
+        uint256 maxBackrun = FullMath.mulDiv(uint256(liquidity), MAX_BACKRUN_RATIO, BASIS_POINTS);
+
         if (backrunAmount > maxBackrun) {
             backrunAmount = maxBackrun;
         }
@@ -309,33 +280,31 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
         emit FlashBackrunnerSet(_backrunner);
     }
 
+    function setMaxFlashLoanAmount(uint256 amount) external onlyOwner {
+        maxFlashLoanAmount = amount;
+        emit MaxFlashLoanAmountSet(amount);
+    }
+
     /// @notice Update configuration
-    function setConfig(
-        uint256 _lpShareBps,
-        uint256 _minDivergenceBps,
-        uint256 _maxOpportunityAge
-    ) external onlyOwner {
+    function setConfig(uint256 _lpShareBps, uint256 _minDivergenceBps, uint256 _maxOpportunityAge) external onlyOwner {
         require(_lpShareBps <= BASIS_POINTS, "Invalid LP share");
-        
+
         lpShareBps = _lpShareBps;
         minDivergenceBps = _minDivergenceBps;
         maxOpportunityAge = _maxOpportunityAge;
-        
+
         emit ConfigUpdated(_lpShareBps, _minDivergenceBps);
     }
 
     // ============ View Functions ============
 
     /// @notice Get pending opportunity for a pool
-    function getPendingOpportunity(
-        bytes32 poolId
-    ) external view returns (BackrunOpportunity memory, bool isValid) {
+    function getPendingOpportunity(bytes32 poolId) external view returns (BackrunOpportunity memory, bool isValid) {
         BackrunOpportunity storage opp = pendingOpportunities[poolId];
         uint256 timestamp = opportunityTimestamp[poolId];
-        
-        isValid = opp.shouldBackrun && 
-                  block.number <= timestamp + maxOpportunityAge;
-        
+
+        isValid = opp.shouldBackrun && block.number <= timestamp + maxOpportunityAge;
+
         return (opp, isValid);
     }
 

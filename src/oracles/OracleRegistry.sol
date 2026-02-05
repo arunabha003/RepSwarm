@@ -42,11 +42,10 @@ contract OracleRegistry is IOracleRegistry, Ownable {
     /// @param bases Array of base token addresses
     /// @param quotes Array of quote token addresses
     /// @param feeds Array of Chainlink aggregator addresses
-    function setPriceFeeds(
-        address[] calldata bases,
-        address[] calldata quotes,
-        address[] calldata feeds
-    ) external onlyOwner {
+    function setPriceFeeds(address[] calldata bases, address[] calldata quotes, address[] calldata feeds)
+        external
+        onlyOwner
+    {
         require(bases.length == quotes.length && quotes.length == feeds.length, "Length mismatch");
         for (uint256 i = 0; i < bases.length; i++) {
             if (feeds[i] == address(0)) revert ZeroAddress();
@@ -75,12 +74,17 @@ contract OracleRegistry is IOracleRegistry, Ownable {
     }
 
     /// @inheritdoc IOracleRegistry
-    function getLatestPrice(address base, address quote) external view override returns (uint256 price, uint256 updatedAt) {
+    function getLatestPrice(address base, address quote)
+        external
+        view
+        override
+        returns (uint256 price, uint256 updatedAt)
+    {
         (address feed, bool inverted) = _getFeedWithDirection(base, quote);
         if (feed == address(0)) revert FeedNotFound(base, quote);
 
         AggregatorV3Interface aggregator = AggregatorV3Interface(feed);
-        (, int256 answer, , uint256 updatedAtRaw, ) = aggregator.latestRoundData();
+        (, int256 answer,, uint256 updatedAtRaw,) = aggregator.latestRoundData();
 
         if (answer <= 0) revert InvalidPrice(answer);
         if (block.timestamp - updatedAtRaw > maxStaleness) revert StalePrice(updatedAtRaw, maxStaleness);
@@ -108,7 +112,7 @@ contract OracleRegistry is IOracleRegistry, Ownable {
     /// @param quote The quote token address
     /// @return exists True if a feed exists (in either direction)
     function hasPriceFeed(address base, address quote) external view returns (bool exists) {
-        (address feed, ) = _getFeedWithDirection(base, quote);
+        (address feed,) = _getFeedWithDirection(base, quote);
         exists = feed != address(0);
     }
 

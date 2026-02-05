@@ -23,10 +23,7 @@ library HookLib {
     /// @param manager The pool manager
     /// @param poolKey The pool key
     /// @return sqrtPriceX96 The current sqrt price in Q64.96 format
-    function getSqrtPrice(
-        IPoolManager manager, 
-        PoolKey memory poolKey
-    ) internal view returns (uint160 sqrtPriceX96) {
+    function getSqrtPrice(IPoolManager manager, PoolKey memory poolKey) internal view returns (uint160 sqrtPriceX96) {
         PoolId poolId = poolKey.toId();
         (sqrtPriceX96,,,) = manager.getSlot0(poolId);
     }
@@ -35,10 +32,7 @@ library HookLib {
     /// @param manager The pool manager
     /// @param poolKey The pool key
     /// @return tick The current tick
-    function getTick(
-        IPoolManager manager, 
-        PoolKey memory poolKey
-    ) internal view returns (int24 tick) {
+    function getTick(IPoolManager manager, PoolKey memory poolKey) internal view returns (int24 tick) {
         PoolId poolId = poolKey.toId();
         (, tick,,) = manager.getSlot0(poolId);
     }
@@ -47,10 +41,7 @@ library HookLib {
     /// @param manager The pool manager
     /// @param poolKey The pool key
     /// @return liquidity The current liquidity
-    function getLiquidity(
-        IPoolManager manager, 
-        PoolKey memory poolKey
-    ) internal view returns (uint128 liquidity) {
+    function getLiquidity(IPoolManager manager, PoolKey memory poolKey) internal view returns (uint128 liquidity) {
         PoolId poolId = poolKey.toId();
         liquidity = manager.getLiquidity(poolId);
     }
@@ -63,16 +54,11 @@ library HookLib {
     /// @return protocolFee The protocol fee
     /// @return lpFee The LP fee
     /// @return liquidity The current liquidity
-    function getPoolState(
-        IPoolManager manager, 
-        PoolKey memory poolKey
-    ) internal view returns (
-        uint160 sqrtPriceX96, 
-        int24 tick, 
-        uint24 protocolFee, 
-        uint24 lpFee, 
-        uint128 liquidity
-    ) {
+    function getPoolState(IPoolManager manager, PoolKey memory poolKey)
+        internal
+        view
+        returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee, uint128 liquidity)
+    {
         PoolId poolId = poolKey.toId();
         (sqrtPriceX96, tick, protocolFee, lpFee) = manager.getSlot0(poolId);
         liquidity = manager.getLiquidity(poolId);
@@ -83,7 +69,7 @@ library HookLib {
     /// @return price The price as token1/token0 with 18 decimals
     function sqrtPriceToPrice(uint160 sqrtPriceX96) internal pure returns (uint256 price) {
         if (sqrtPriceX96 == 0) return 0;
-        
+
         // price(1e18) = (sqrtPriceX96^2 / 2^192) * 1e18
         // Multiply by 1e18 before dividing so we don't lose precision for prices < 1.
         uint256 scaledB = uint256(sqrtPriceX96) * PRICE_PRECISION;
@@ -95,11 +81,11 @@ library HookLib {
     /// @return sqrtPriceX96 The sqrt price in Q64.96 format
     function priceToSqrtPrice(uint256 price) internal pure returns (uint160 sqrtPriceX96) {
         if (price == 0) return 0;
-        
+
         // sqrtPriceX96 = sqrt(price * 2^192 / 10^18)
         uint256 numerator = FullMath.mulDiv(price, 1 << 192, PRICE_PRECISION);
         uint256 sqrtPrice = sqrt(numerator);
-        
+
         require(sqrtPrice <= type(uint160).max, "Price too large");
         sqrtPriceX96 = uint160(sqrtPrice);
     }
@@ -108,10 +94,7 @@ library HookLib {
     /// @param manager The pool manager
     /// @param poolKey The pool key
     /// @return price Pool price as token1/token0 with 18 decimals
-    function getPoolPrice(
-        IPoolManager manager, 
-        PoolKey memory poolKey
-    ) internal view returns (uint256 price) {
+    function getPoolPrice(IPoolManager manager, PoolKey memory poolKey) internal view returns (uint256 price) {
         uint160 sqrtPriceX96 = getSqrtPrice(manager, poolKey);
         price = sqrtPriceToPrice(sqrtPriceX96);
     }
@@ -120,15 +103,12 @@ library HookLib {
     /// @param swapAmount The amount being swapped
     /// @param liquidity The pool liquidity
     /// @return impactBps Price impact in basis points
-    function calculatePriceImpact(
-        uint256 swapAmount,
-        uint128 liquidity
-    ) internal pure returns (uint256 impactBps) {
+    function calculatePriceImpact(uint256 swapAmount, uint128 liquidity) internal pure returns (uint256 impactBps) {
         if (liquidity == 0) return 10_000; // 100% impact if no liquidity
-        
+
         // Simplified impact calculation: swapAmount / (2 * liquidity) * 10000
         impactBps = FullMath.mulDiv(swapAmount, 10_000, 2 * uint256(liquidity));
-        
+
         // Cap at 100%
         if (impactBps > 10_000) impactBps = 10_000;
     }
@@ -138,7 +118,7 @@ library HookLib {
     /// @return y The square root
     function sqrt(uint256 x) internal pure returns (uint256 y) {
         if (x == 0) return 0;
-        
+
         uint256 z = (x + 1) / 2;
         y = x;
         while (z < y) {
@@ -158,9 +138,7 @@ library HookLib {
     /// @param amountSpecified The amount specified (negative for exact input)
     /// @return amount The absolute amount
     function getSwapAmount(int256 amountSpecified) internal pure returns (uint256 amount) {
-        amount = amountSpecified < 0 
-            ? uint256(-amountSpecified) 
-            : uint256(amountSpecified);
+        amount = amountSpecified < 0 ? uint256(-amountSpecified) : uint256(amountSpecified);
     }
 
     /// @notice Determine input and output currencies from swap direction
@@ -168,10 +146,11 @@ library HookLib {
     /// @param zeroForOne The swap direction
     /// @return inputCurrency The currency being sold
     /// @return outputCurrency The currency being bought
-    function getSwapCurrencies(
-        PoolKey memory poolKey,
-        bool zeroForOne
-    ) internal pure returns (Currency inputCurrency, Currency outputCurrency) {
+    function getSwapCurrencies(PoolKey memory poolKey, bool zeroForOne)
+        internal
+        pure
+        returns (Currency inputCurrency, Currency outputCurrency)
+    {
         if (zeroForOne) {
             inputCurrency = poolKey.currency0;
             outputCurrency = poolKey.currency1;
@@ -192,8 +171,6 @@ library HookLib {
     /// @param zeroForOne The swap direction
     /// @return sqrtPriceLimitX96 The price limit
     function getSqrtPriceLimit(bool zeroForOne) internal pure returns (uint160 sqrtPriceLimitX96) {
-        sqrtPriceLimitX96 = zeroForOne 
-            ? TickMath.MIN_SQRT_PRICE + 1 
-            : TickMath.MAX_SQRT_PRICE - 1;
+        sqrtPriceLimitX96 = zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1;
     }
 }

@@ -51,7 +51,9 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
 
     // Events
     event FeesAccumulated(PoolId indexed poolId, Currency indexed currency, uint256 amount);
-    event FeesDonatedToLPs(PoolId indexed poolId, Currency indexed currency0, Currency indexed currency1, uint256 amount0, uint256 amount1);
+    event FeesDonatedToLPs(
+        PoolId indexed poolId, Currency indexed currency0, Currency indexed currency1, uint256 amount0, uint256 amount1
+    );
     event HookAuthorized(address indexed hook, bool authorized);
     event PoolKeyRegistered(PoolId indexed poolId);
     event ThresholdUpdated(uint256 newThreshold);
@@ -67,11 +69,9 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
     error ZeroAmount();
     error TransferFailed();
 
-    constructor(
-        IPoolManager _poolManager,
-        uint256 _minDonationThreshold,
-        uint256 _minDonationInterval
-    ) Ownable(msg.sender) {
+    constructor(IPoolManager _poolManager, uint256 _minDonationThreshold, uint256 _minDonationInterval)
+        Ownable(msg.sender)
+    {
         poolManager = _poolManager;
         minDonationThreshold = _minDonationThreshold;
         minDonationInterval = _minDonationInterval;
@@ -90,7 +90,7 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
     function registerPoolKey(PoolKey calldata key) external {
         PoolId poolId = key.toId();
         if (poolKeyRegistered[poolId]) return; // Already registered
-        
+
         poolKeys[poolId] = key;
         poolKeyRegistered[poolId] = true;
         emit PoolKeyRegistered(poolId);
@@ -115,11 +115,7 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
     /// @param poolId The pool ID
     /// @param currency The currency being accumulated
     /// @param amount The amount to accumulate
-    function accumulateFees(
-        PoolId poolId,
-        Currency currency,
-        uint256 amount
-    ) external {
+    function accumulateFees(PoolId poolId, Currency currency, uint256 amount) external {
         if (!authorizedHooks[msg.sender]) {
             revert UnauthorizedHook(msg.sender);
         }
@@ -144,7 +140,7 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
         }
 
         PoolKey memory key = poolKeys[poolId];
-        
+
         uint256 amount0 = accumulatedFees[poolId][key.currency0];
         uint256 amount1 = accumulatedFees[poolId][key.currency1];
 
@@ -173,11 +169,7 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
 
     /// @notice Internal function to execute the actual donation
     /// @dev Implements IUnlockCallback pattern for pool manager interaction
-    function _executeDonation(
-        PoolKey memory key,
-        uint256 amount0,
-        uint256 amount1
-    ) internal {
+    function _executeDonation(PoolKey memory key, uint256 amount0, uint256 amount1) internal {
         // Approve tokens for pool manager if ERC20
         if (!key.currency0.isAddressZero() && amount0 > 0) {
             IERC20(Currency.unwrap(key.currency0)).approve(address(poolManager), amount0);
@@ -196,13 +188,13 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
     /// @dev Executes the actual donate() call
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         require(msg.sender == address(poolManager), "Only pool manager");
-        
+
         (PoolKey memory key, uint256 amount0, uint256 amount1) = abi.decode(data, (PoolKey, uint256, uint256));
-        
+
         // Execute donation to LPs
         // donate() adds fees to the pool that get distributed to in-range LPs
         BalanceDelta delta = poolManager.donate(key, amount0, amount1, "");
-        
+
         // Settle the donations
         if (amount0 > 0) {
             _settle(key.currency0, amount0);
@@ -232,11 +224,7 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
     /// @return canDonate_ Whether donation can be executed
     /// @return amount0 Accumulated amount of currency0
     /// @return amount1 Accumulated amount of currency1
-    function canDonate(PoolId poolId) external view returns (
-        bool canDonate_,
-        uint256 amount0,
-        uint256 amount1
-    ) {
+    function canDonate(PoolId poolId) external view returns (bool canDonate_, uint256 amount0, uint256 amount1) {
         if (!poolKeyRegistered[poolId]) {
             return (false, 0, 0);
         }
@@ -271,11 +259,7 @@ contract LPFeeAccumulator is Ownable, ReentrancyGuard {
     /// @param currency The currency to withdraw
     /// @param amount The amount to withdraw
     /// @param recipient The recipient address
-    function emergencyWithdraw(
-        Currency currency,
-        uint256 amount,
-        address recipient
-    ) external onlyOwner {
+    function emergencyWithdraw(Currency currency, uint256 amount, address recipient) external onlyOwner {
         if (currency.isAddressZero()) {
             (bool success,) = recipient.call{value: amount}("");
             if (!success) revert TransferFailed();

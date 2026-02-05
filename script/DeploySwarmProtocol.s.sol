@@ -30,7 +30,7 @@ contract DeploySwarmProtocol is Script {
     using CurrencyLibrary for Currency;
 
     // ============ Sepolia Addresses ============
-    
+
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
     address constant ERC8004_IDENTITY = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
     address constant ERC8004_REPUTATION = 0x8004B663056A597Dffe9eCcC1965A193B7388713;
@@ -48,7 +48,7 @@ contract DeploySwarmProtocol is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
-        
+
         console.log("=== Swarm Protocol Deployment ===");
         console.log("Deployer:", deployer);
         console.log("Pool Manager:", POOL_MANAGER);
@@ -64,8 +64,8 @@ contract DeploySwarmProtocol is Script {
         console.log("\n2. Deploying LP Fee Accumulator...");
         lpFeeAccumulator = new LPFeeAccumulator(
             IPoolManager(POOL_MANAGER),
-            0.001 ether,  // Min donation threshold
-            1 hours       // Min donation interval
+            0.001 ether, // Min donation threshold
+            1 hours // Min donation interval
         );
         console.log("   LP Fee Accumulator:", address(lpFeeAccumulator));
 
@@ -81,28 +81,22 @@ contract DeploySwarmProtocol is Script {
 
         // 5. Deploy Agents
         console.log("\n5. Deploying Agents...");
-        
+
         // Arbitrage Agent
         arbitrageAgent = new ArbitrageAgent(
             IPoolManager(POOL_MANAGER),
             deployer,
-            8000,   // 80% hook share
-            50      // 0.5% min divergence
+            8000, // 80% hook share
+            50 // 0.5% min divergence
         );
         console.log("   Arbitrage Agent:", address(arbitrageAgent));
 
         // Dynamic Fee Agent
-        dynamicFeeAgent = new DynamicFeeAgent(
-            IPoolManager(POOL_MANAGER),
-            deployer
-        );
+        dynamicFeeAgent = new DynamicFeeAgent(IPoolManager(POOL_MANAGER), deployer);
         console.log("   Dynamic Fee Agent:", address(dynamicFeeAgent));
 
         // Backrun Agent
-        backrunAgent = new BackrunAgent(
-            IPoolManager(POOL_MANAGER),
-            deployer
-        );
+        backrunAgent = new BackrunAgent(IPoolManager(POOL_MANAGER), deployer);
         console.log("   Backrun Agent:", address(backrunAgent));
 
         // 5b. Deploy Flash Loan Backrunner (executor)
@@ -115,15 +109,15 @@ contract DeploySwarmProtocol is Script {
 
         // 6. Configure Agent Executor
         console.log("\n6. Configuring Agent Executor...");
-        
+
         // Register agents
         agentExecutor.registerAgent(AgentType.ARBITRAGE, address(arbitrageAgent));
         agentExecutor.registerAgent(AgentType.DYNAMIC_FEE, address(dynamicFeeAgent));
         agentExecutor.registerAgent(AgentType.BACKRUN, address(backrunAgent));
-        
+
         // Authorize hook to call executor
         agentExecutor.authorizeHook(address(hook), true);
-        
+
         console.log("   Agents registered and hook authorized");
 
         // 7. Configure Hook
@@ -136,16 +130,16 @@ contract DeploySwarmProtocol is Script {
 
         // 8. Configure Agents
         console.log("\n8. Configuring Agents...");
-        
+
         // Authorize executor to call agents
         arbitrageAgent.authorizeCaller(address(agentExecutor), true);
         dynamicFeeAgent.authorizeCaller(address(agentExecutor), true);
         backrunAgent.authorizeCaller(address(agentExecutor), true);
-        
+
         // Set LP accumulator in backrun agent
         backrunAgent.setLPFeeAccumulator(address(lpFeeAccumulator));
         backrunAgent.setFlashBackrunner(address(flashBackrunner));
-        
+
         // Authorize hook in LP accumulator
         lpFeeAccumulator.setHookAuthorization(address(hook), true);
         lpFeeAccumulator.setHookAuthorization(address(flashBackrunner), true);
@@ -154,7 +148,7 @@ contract DeploySwarmProtocol is Script {
         flashBackrunner.setLPFeeAccumulator(address(lpFeeAccumulator));
         flashBackrunner.setRecorderAuthorization(address(hook), true);
         flashBackrunner.setForwarderAuthorization(address(backrunAgent), true);
-        
+
         console.log("   Agents configured");
 
         vm.stopBroadcast();
@@ -166,33 +160,23 @@ contract DeploySwarmProtocol is Script {
     function _deployHook(address deployer) internal returns (SwarmHook) {
         // Define required hook permissions
         uint160 flags = uint160(
-            Hooks.BEFORE_SWAP_FLAG |
-            Hooks.AFTER_SWAP_FLAG |
-            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
-            Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
 
         // Mine for address with correct flags
         bytes memory creationCode = type(SwarmHook).creationCode;
         bytes memory constructorArgs = abi.encode(POOL_MANAGER, deployer);
 
-        (address hookAddress, bytes32 salt) = HookMiner.find(
-            address(this),
-            flags,
-            creationCode,
-            constructorArgs
-        );
+        (address hookAddress, bytes32 salt) = HookMiner.find(address(this), flags, creationCode, constructorArgs);
 
         console.log("   Mined hook address:", hookAddress);
 
         // Deploy with salt
-        SwarmHook deployedHook = new SwarmHook{salt: salt}(
-            IPoolManager(POOL_MANAGER),
-            deployer
-        );
+        SwarmHook deployedHook = new SwarmHook{salt: salt}(IPoolManager(POOL_MANAGER), deployer);
 
         require(address(deployedHook) == hookAddress, "Hook address mismatch");
-        
+
         return deployedHook;
     }
 

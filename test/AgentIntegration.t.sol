@@ -27,50 +27,44 @@ contract AgentIntegrationTest is Test {
     ArbitrageAgent public arbAgent;
     DynamicFeeAgent public feeAgent;
     BackrunAgent public backrunAgent;
-    
+
     // Mock addresses
     address public mockPoolManager = makeAddr("poolManager");
     address public mockHook = makeAddr("hook");
     address public admin;
-    
+
     // Test pool
     PoolKey public testPoolKey;
     PoolId public testPoolId;
 
     function setUp() public {
         admin = address(this);
-        
+
         // Deploy executor
         executor = new AgentExecutor();
-        
+
         // Deploy agents with proper constructors
         arbAgent = new ArbitrageAgent(
             IPoolManager(mockPoolManager),
             admin,
             8000, // 80% hook share
-            50    // 0.5% min divergence
+            50 // 0.5% min divergence
         );
-        
-        feeAgent = new DynamicFeeAgent(
-            IPoolManager(mockPoolManager),
-            admin
-        );
-        
-        backrunAgent = new BackrunAgent(
-            IPoolManager(mockPoolManager),
-            admin
-        );
-        
+
+        feeAgent = new DynamicFeeAgent(IPoolManager(mockPoolManager), admin);
+
+        backrunAgent = new BackrunAgent(IPoolManager(mockPoolManager), admin);
+
         // Register agents with executor
         executor.registerAgent(AgentType.ARBITRAGE, address(arbAgent));
         executor.registerAgent(AgentType.DYNAMIC_FEE, address(feeAgent));
         executor.registerAgent(AgentType.BACKRUN, address(backrunAgent));
-        
+
         // Authorize executor to call agents
         arbAgent.authorizeCaller(address(executor), true);
         feeAgent.authorizeCaller(address(executor), true);
         backrunAgent.authorizeCaller(address(executor), true);
-        
+
         // Create test pool key
         testPoolKey = PoolKey({
             currency0: Currency.wrap(address(0x1)),
@@ -89,7 +83,7 @@ contract AgentIntegrationTest is Test {
         assertEq(executor.agents(AgentType.ARBITRAGE), address(arbAgent));
         assertEq(executor.agents(AgentType.DYNAMIC_FEE), address(feeAgent));
         assertEq(executor.agents(AgentType.BACKRUN), address(backrunAgent));
-        
+
         // Verify all enabled by default
         assertTrue(executor.agentEnabled(AgentType.ARBITRAGE));
         assertTrue(executor.agentEnabled(AgentType.DYNAMIC_FEE));
@@ -106,7 +100,7 @@ contract AgentIntegrationTest is Test {
         // Disable arbitrage agent
         executor.setAgentEnabled(AgentType.ARBITRAGE, false);
         assertFalse(executor.agentEnabled(AgentType.ARBITRAGE));
-        
+
         // Re-enable
         executor.setAgentEnabled(AgentType.ARBITRAGE, true);
         assertTrue(executor.agentEnabled(AgentType.ARBITRAGE));
@@ -120,23 +114,18 @@ contract AgentIntegrationTest is Test {
             9000, // different params
             100
         );
-        
+
         // Swap agent
         executor.registerAgent(AgentType.ARBITRAGE, address(newArbAgent));
-        
+
         assertEq(executor.agents(AgentType.ARBITRAGE), address(newArbAgent));
     }
 
     function test_NonOwnerCannotRegisterAgent() public {
         address notOwner = makeAddr("notOwner");
-        
-        ArbitrageAgent newAgent = new ArbitrageAgent(
-            IPoolManager(mockPoolManager),
-            notOwner,
-            8000,
-            50
-        );
-        
+
+        ArbitrageAgent newAgent = new ArbitrageAgent(IPoolManager(mockPoolManager), notOwner, 8000, 50);
+
         vm.prank(notOwner);
         vm.expectRevert();
         executor.registerAgent(AgentType.ARBITRAGE, address(newAgent));
@@ -149,11 +138,11 @@ contract AgentIntegrationTest is Test {
         assertTrue(arbAgent.isActive());
         assertTrue(feeAgent.isActive());
         assertTrue(backrunAgent.isActive());
-        
+
         // Deactivate an agent
         arbAgent.setActive(false);
         assertFalse(arbAgent.isActive());
-        
+
         // Reactivate
         arbAgent.setActive(true);
         assertTrue(arbAgent.isActive());
@@ -164,9 +153,9 @@ contract AgentIntegrationTest is Test {
     function test_AgentCanConfigureIdentity() public {
         uint256 erc8004Id = 12345;
         address identityRegistry = makeAddr("identityRegistry");
-        
+
         arbAgent.configureIdentity(erc8004Id, identityRegistry);
-        
+
         // Check via getAgentId
         assertEq(arbAgent.getAgentId(), erc8004Id);
     }
@@ -177,7 +166,7 @@ contract AgentIntegrationTest is Test {
         assertTrue(feeAgent.agentType() == AgentType.DYNAMIC_FEE);
         assertTrue(backrunAgent.agentType() == AgentType.BACKRUN);
     }
-    
+
     function test_AgentHasConfidence() public view {
         // All agents have default confidence
         assertTrue(arbAgent.getConfidence() > 0);

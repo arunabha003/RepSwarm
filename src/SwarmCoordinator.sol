@@ -17,7 +17,11 @@ import {IERC20Minimal} from "@uniswap/v4-core/src/interfaces/external/IERC20Mini
 import {SwarmTypes} from "./libraries/SwarmTypes.sol";
 import {SwarmHookData} from "./libraries/SwarmHookData.sol";
 import {ISwarmCoordinator} from "./interfaces/ISwarmCoordinator.sol";
-import {IERC8004IdentityRegistry, IERC8004ReputationRegistry, ERC8004Integration} from "./erc8004/ERC8004Integration.sol";
+import {
+    IERC8004IdentityRegistry,
+    IERC8004ReputationRegistry,
+    ERC8004Integration
+} from "./erc8004/ERC8004Integration.sol";
 
 /// @title SwarmCoordinator
 /// @notice Coordinates multi-agent routing with ERC-8004 identity and reputation
@@ -50,31 +54,27 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     mapping(address => AgentConfig) public agents;
 
     address public treasury;
-    
+
     /// @notice ERC-8004 Identity Registry
     IERC8004IdentityRegistry public identityRegistry;
-    
+
     /// @notice ERC-8004 Reputation Registry
     IERC8004ReputationRegistry public reputationRegistry;
-    
+
     string public reputationTag1;
     string public reputationTag2;
     address[] public reputationClients;
     int256 public minReputationWad;
-    
+
     /// @notice Whether to enforce ERC-8004 identity verification
     bool public enforceIdentity;
-    
+
     /// @notice Whether to enforce minimum reputation
     bool public enforceReputation;
 
     event IntentCreated(uint256 indexed intentId, address indexed requester, uint256 candidateCount);
     event ProposalSubmitted(
-        uint256 indexed intentId,
-        address indexed agent,
-        uint256 indexed agentId,
-        uint256 candidateId,
-        int256 score
+        uint256 indexed intentId, address indexed agent, uint256 indexed agentId, uint256 candidateId, int256 score
     );
     event IntentExecuted(uint256 indexed intentId, address indexed executor, uint256 candidateId, uint256 agentId);
     event AgentRegistered(address indexed agent, uint256 indexed agentId, bool active);
@@ -84,31 +84,37 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     event FeedbackGiven(uint256 indexed intentId, uint256 indexed agentId, int128 value);
     event EnforcementUpdated(bool enforceIdentity, bool enforceReputation);
 
-    constructor(
-        IPoolManager poolManager,
-        address treasury_,
-        address identityRegistry_,
-        address reputationRegistry_
-    ) V4Router(poolManager) Ownable(msg.sender) {
+    constructor(IPoolManager poolManager, address treasury_, address identityRegistry_, address reputationRegistry_)
+        V4Router(poolManager)
+        Ownable(msg.sender)
+    {
         treasury = treasury_;
-        
-        // Use official ERC-8004 Sepolia addresses if not provided
-        if (identityRegistry_ == address(0)) {
+
+        // Use official ERC-8004 addresses if not provided.
+        if (identityRegistry_ != address(0)) {
+            identityRegistry = IERC8004IdentityRegistry(identityRegistry_);
+        } else if (block.chainid == 1) {
+            identityRegistry = IERC8004IdentityRegistry(ERC8004Integration.MAINNET_IDENTITY_REGISTRY);
+        } else if (block.chainid == 11155111) {
             identityRegistry = IERC8004IdentityRegistry(ERC8004Integration.SEPOLIA_IDENTITY_REGISTRY);
         } else {
-            identityRegistry = IERC8004IdentityRegistry(identityRegistry_);
+            identityRegistry = IERC8004IdentityRegistry(address(0));
         }
-        
-        if (reputationRegistry_ == address(0)) {
+
+        if (reputationRegistry_ != address(0)) {
+            reputationRegistry = IERC8004ReputationRegistry(reputationRegistry_);
+        } else if (block.chainid == 1) {
+            reputationRegistry = IERC8004ReputationRegistry(ERC8004Integration.MAINNET_REPUTATION_REGISTRY);
+        } else if (block.chainid == 11155111) {
             reputationRegistry = IERC8004ReputationRegistry(ERC8004Integration.SEPOLIA_REPUTATION_REGISTRY);
         } else {
-            reputationRegistry = IERC8004ReputationRegistry(reputationRegistry_);
+            reputationRegistry = IERC8004ReputationRegistry(address(0));
         }
-        
+
         // Default tags for Swarm routing
         reputationTag1 = ERC8004Integration.TAG_SWARM_ROUTING;
         reputationTag2 = "";
-        
+
         // Start with enforcement disabled for easier onboarding
         enforceIdentity = false;
         enforceReputation = false;
@@ -145,7 +151,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     function setIdentityRegistry(address identityRegistry_) external onlyOwner {
         identityRegistry = IERC8004IdentityRegistry(identityRegistry_);
     }
-    
+
     /// @notice Enable or disable identity and reputation enforcement
     function setEnforcement(bool enforceIdentity_, bool enforceReputation_) external onlyOwner {
         enforceIdentity = enforceIdentity_;
@@ -248,11 +254,11 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         }
 
         // Build swap actions - treasury fee is handled in afterSwap hook
-        // User gets full output minus what hook diverts to LP donation  
+        // User gets full output minus what hook diverts to LP donation
         bytes memory actions = abi.encodePacked(
             bytes1(uint8(Actions.SWAP_EXACT_IN)),
             bytes1(uint8(Actions.SETTLE)),
-            bytes1(uint8(Actions.TAKE))     // User takes output
+            bytes1(uint8(Actions.TAKE)) // User takes output
         );
 
         bytes[] memory params = new bytes[](3);
@@ -274,7 +280,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         poolManager.unlock(unlockData);
 
         intent.executed = true;
-        
+
         // Give positive feedback to the winning agent via ERC-8004
         _giveFeedback(intentId, agentId, int128(int256(1e18))); // +1 WAD for successful execution
 
@@ -315,10 +321,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
 
     function getAgentInfo(address agent) external view override returns (ISwarmCoordinator.AgentInfo memory) {
         AgentConfig storage config = agents[agent];
-        return ISwarmCoordinator.AgentInfo({
-            approved: config.active,
-            identityId: config.agentId
-        });
+        return ISwarmCoordinator.AgentInfo({approved: config.active, identityId: config.agentId});
     }
 
     function msgSender() public view override returns (address) {
@@ -383,7 +386,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
     function _requireIdentity(address agent, uint256 agentId) internal view {
         if (!enforceIdentity) return;
         if (address(identityRegistry) == address(0)) return;
-        
+
         address wallet = identityRegistry.getAgentWallet(agentId);
         if (wallet == agent) return;
         if (!identityRegistry.isAuthorizedOrOwner(agent, agentId)) revert UnauthorizedAgent(agent);
@@ -393,10 +396,10 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
         if (!enforceReputation) return;
         if (address(reputationRegistry) == address(0)) return;
         if (reputationClients.length == 0) return;
-        
+
         (uint64 count, int128 value, uint8 decimals) =
             reputationRegistry.getSummary(agentId, reputationClients, reputationTag1, reputationTag2);
-        
+
         // Allow new agents with no feedback
         if (count == 0) return;
 
@@ -438,7 +441,7 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             // Could emit an event here for monitoring
         }
     }
-    
+
     /// @notice Get an agent's reputation summary
     /// @param agentId The agent's ERC-8004 identity ID
     /// @return count Number of feedbacks
@@ -449,25 +452,16 @@ contract SwarmCoordinator is V4Router, ReentrancyLock, Ownable, ISwarmCoordinato
             // Try to get all clients
             address[] memory clients = reputationRegistry.getClients(agentId);
             if (clients.length == 0) return (0, 0);
-            
+
             int128 value;
             uint8 decimals;
-            (count, value, decimals) = reputationRegistry.getSummary(
-                agentId,
-                clients,
-                reputationTag1,
-                reputationTag2
-            );
+            (count, value, decimals) = reputationRegistry.getSummary(agentId, clients, reputationTag1, reputationTag2);
             reputationWad = _normalize(value, decimals);
         } else {
             int128 value;
             uint8 decimals;
-            (count, value, decimals) = reputationRegistry.getSummary(
-                agentId,
-                reputationClients,
-                reputationTag1,
-                reputationTag2
-            );
+            (count, value, decimals) =
+                reputationRegistry.getSummary(agentId, reputationClients, reputationTag1, reputationTag2);
             reputationWad = _normalize(value, decimals);
         }
     }

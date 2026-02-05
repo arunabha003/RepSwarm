@@ -31,7 +31,9 @@ interface ISwarmCoordinator {
     error AgentNotApproved();
     error AlreadyProposed();
 
-    function createIntent(SwarmTypes.IntentParams calldata params, bytes[] calldata candidatePaths) external returns (uint256 intentId);
+    function createIntent(SwarmTypes.IntentParams calldata params, bytes[] calldata candidatePaths)
+        external
+        returns (uint256 intentId);
     function getIntent(uint256 intentId) external view returns (IntentView memory);
     function getCandidateCount(uint256 intentId) external view returns (uint256);
     function getCandidatePath(uint256 intentId, uint256 candidateId) external view returns (bytes memory);
