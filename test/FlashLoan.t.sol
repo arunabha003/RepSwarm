@@ -85,6 +85,7 @@ contract FlashLoanTest is Test {
         PoolId poolId = mockKey.toId();
         
         // Record a backrun opportunity (anyone can record for testing)
+        vm.prank(owner);
         backrunner.recordBackrunOpportunity(
             mockKey,
             2000e18,  // target price
@@ -111,6 +112,7 @@ contract FlashLoanTest is Test {
         PoolId poolId = mockKey.toId();
         
         // Record opportunity
+        vm.prank(owner);
         backrunner.recordBackrunOpportunity(
             mockKey,
             2000e18,
@@ -126,6 +128,7 @@ contract FlashLoanTest is Test {
             uint256 currentPrice,
             uint256 backrunAmount,
             bool zeroForOne,
+            ,
             ,
             bool executed
         ) = backrunner.pendingBackruns(poolId);

@@ -40,6 +40,9 @@ interface IAavePool {
 contract SepoliaForkTest is Test {
     using PoolIdLibrary for PoolKey;
 
+    string internal constant DEFAULT_SEPOLIA_RPC_URL =
+        "https://eth-sepolia.g.alchemy.com/v2/KywLaq2zlVzePOhip0BY3U8ztfHkYDmo";
+
     // ============ Sepolia Addresses ============
     
     // Uniswap V4 PoolManager on Sepolia
@@ -71,8 +74,9 @@ contract SepoliaForkTest is Test {
     // ============ Setup ============
     
     function setUp() public {
-        // Check we're on a fork
-        require(block.chainid == 11155111, "Must run on Sepolia fork");
+        // Always run on a Sepolia fork so `forge test` works without CLI flags.
+        string memory rpc = vm.envOr("SEPOLIA_RPC_URL", DEFAULT_SEPOLIA_RPC_URL);
+        vm.createSelectFork(rpc);
         
         deployer = makeAddr("deployer");
         vm.deal(deployer, 100 ether);

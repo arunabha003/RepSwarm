@@ -46,6 +46,11 @@ contract MevIntegrationTest is Test {
     
     address internal constant TREASURY = address(0xBEEF);
     address internal constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
+
+    string internal constant DEFAULT_SEPOLIA_RPC_URL =
+        "https://eth-sepolia.g.alchemy.com/v2/KywLaq2zlVzePOhip0BY3U8ztfHkYDmo";
+
+    address internal constant DEFAULT_POOL_MANAGER = 0x8C4BcBE6b9eF47855f97E675296FA3F6fafa5F1A;
     
     uint160 internal constant SQRT_PRICE_1_1 = 79228162514264337593543950336; // 1:1 price
     uint160 internal constant SQRT_PRICE_1_2 = 56022770974786139918731938227; // 1:2 price (50% cheaper)
@@ -80,12 +85,10 @@ contract MevIntegrationTest is Test {
 
     function setUp() public {
         // Fork Sepolia
-        string memory rpc = vm.envString("SEPOLIA_RPC_URL");
+        string memory rpc = vm.envOr("SEPOLIA_RPC_URL", DEFAULT_SEPOLIA_RPC_URL);
         vm.createSelectFork(rpc);
 
-        address poolManagerAddr = vm.envAddress("POOL_MANAGER");
-        require(poolManagerAddr != address(0), "POOL_MANAGER missing");
-        poolManager = IPoolManager(poolManagerAddr);
+        poolManager = IPoolManager(vm.envOr("POOL_MANAGER", DEFAULT_POOL_MANAGER));
 
         // Deploy test tokens
         tokenA = new TestERC20("TokenA", "TKA");
@@ -155,9 +158,10 @@ contract MevIntegrationTest is Test {
 
     function _deployHook() internal {
         uint160 flags = uint160(
-            Hooks.BEFORE_SWAP_FLAG | 
-            Hooks.AFTER_SWAP_FLAG | 
-            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_SWAP_FLAG |
+                Hooks.AFTER_SWAP_FLAG |
+                Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
+                Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
 
         bytes memory constructorArgs = abi.encode(
