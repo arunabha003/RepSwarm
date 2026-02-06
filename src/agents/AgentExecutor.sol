@@ -54,6 +54,15 @@ contract AgentExecutor is Ownable {
 
     mapping(AgentType => ReputationSwitchConfig) internal reputationSwitchConfigs;
 
+    /// @notice Optional on-chain scoring config. If enabled, AgentExecutor writes ERC-8004
+    /// feedback for each recorded success/failure so no off-chain scorer is required.
+    IERC8004ReputationRegistry public scoringReputationRegistry;
+    string public scoringTag1;
+    string public scoringTag2;
+    int128 public scoringSuccessWad = 1e18;
+    int128 public scoringFailureWad = -1e18;
+    bool public scoringEnabled;
+
     // ============ Structs ============
 
     struct AgentStats {
@@ -103,6 +112,10 @@ contract AgentExecutor is Ownable {
         AgentType indexed agentType, address indexed oldAgent, address indexed newAgent, int256 reputationWad
     );
 
+    event OnchainScoringConfigUpdated(
+        address indexed registry, string tag1, string tag2, int128 successWad, int128 failureWad, bool enabled
+    );
+
     // ============ Errors ============
 
     error NotAuthorizedHook();
@@ -144,11 +157,13 @@ contract AgentExecutor is Ownable {
                         result.shouldCapture = true;
                         result.captureAmount = arbResult.hookShare;
                         _recordExecution(arbAgent, true, arbResult.hookShare);
+                        _tryWriteOnchainFeedback(arbAgent, true);
                         emit AgentExecuted(AgentType.ARBITRAGE, arbAgent, true, arbResult.hookShare);
                         return result; // Arbitrage takes priority
                     }
                 } catch {
                     _recordExecution(arbAgent, false, 0);
+                    _tryWriteOnchainFeedback(arbAgent, false);
                     emit AgentExecuted(AgentType.ARBITRAGE, arbAgent, false, 0);
                     // Try backup agent
                     arbAgent = backupAgents[AgentType.ARBITRAGE];
@@ -160,11 +175,13 @@ contract AgentExecutor is Ownable {
                                 result.shouldCapture = true;
                                 result.captureAmount = arbResult.hookShare;
                                 _recordExecution(arbAgent, true, arbResult.hookShare);
+                                _tryWriteOnchainFeedback(arbAgent, true);
                                 emit AgentExecuted(AgentType.ARBITRAGE, arbAgent, true, arbResult.hookShare);
                                 return result;
                             }
                         } catch {
                             _recordExecution(arbAgent, false, 0);
+                            _tryWriteOnchainFeedback(arbAgent, false);
                             emit AgentExecuted(AgentType.ARBITRAGE, arbAgent, false, 0);
                         }
                     }
@@ -183,10 +200,12 @@ contract AgentExecutor is Ownable {
                         result.overrideFee = feeResult.recommendedFee;
                         result.useOverrideFee = true;
                         _recordExecution(feeAgent, true, feeResult.recommendedFee);
+                        _tryWriteOnchainFeedback(feeAgent, true);
                         emit AgentExecuted(AgentType.DYNAMIC_FEE, feeAgent, true, feeResult.recommendedFee);
                     }
                 } catch {
                     _recordExecution(feeAgent, false, 0);
+                    _tryWriteOnchainFeedback(feeAgent, false);
                     emit AgentExecuted(AgentType.DYNAMIC_FEE, feeAgent, false, 0);
                 }
             }
@@ -219,10 +238,12 @@ contract AgentExecutor is Ownable {
                         result.targetPrice = opportunity.targetPrice;
                         result.currentPrice = newPoolPrice;
                         _recordExecution(backrunAgent, true, opportunity.expectedProfit);
+                        _tryWriteOnchainFeedback(backrunAgent, true);
                         emit AgentExecuted(AgentType.BACKRUN, backrunAgent, true, opportunity.expectedProfit);
                     }
                 } catch {
                     _recordExecution(backrunAgent, false, 0);
+                    _tryWriteOnchainFeedback(backrunAgent, false);
                     emit AgentExecuted(AgentType.BACKRUN, backrunAgent, false, 0);
                 }
             }
@@ -324,6 +345,25 @@ contract AgentExecutor is Ownable {
     function authorizeHook(address hook, bool authorized) external onlyOwner {
         authorizedHooks[hook] = authorized;
         emit HookAuthorized(hook, authorized);
+    }
+
+    /// @notice Configure optional on-chain scoring that writes ERC-8004 feedback directly
+    /// from AgentExecutor (no off-chain scorer required).
+    function setOnchainScoringConfig(
+        address reputationRegistry,
+        string calldata tag1,
+        string calldata tag2,
+        int128 successWad,
+        int128 failureWad,
+        bool enabled
+    ) external onlyOwner {
+        scoringReputationRegistry = IERC8004ReputationRegistry(reputationRegistry);
+        scoringTag1 = tag1;
+        scoringTag2 = tag2;
+        scoringSuccessWad = successWad;
+        scoringFailureWad = failureWad;
+        scoringEnabled = enabled;
+        emit OnchainScoringConfigUpdated(reputationRegistry, tag1, tag2, successWad, failureWad, enabled);
     }
 
     // ============ Reputation-Based Switching ============
@@ -468,5 +508,20 @@ contract AgentExecutor is Ownable {
             stats.totalValueProcessed += value;
         }
         stats.lastExecution = uint64(block.timestamp);
+    }
+
+    function _tryWriteOnchainFeedback(address agent, bool success) internal {
+        if (!scoringEnabled) return;
+        if (address(scoringReputationRegistry) == address(0)) return;
+
+        uint256 agentId = ISwarmAgent(agent).getAgentId();
+        if (agentId == 0) return;
+
+        int128 value = success ? scoringSuccessWad : scoringFailureWad;
+        try scoringReputationRegistry.giveFeedback(
+            agentId, value, 18, scoringTag1, scoringTag2, "", "", bytes32(0)
+        ) {} catch {
+            // Feedback is best-effort and must never break swap execution.
+        }
     }
 }

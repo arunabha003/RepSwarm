@@ -3,13 +3,14 @@ pragma solidity ^0.8.24;
 
 import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
+import {IERC721Receiver} from "openzeppelin-contracts/contracts/token/ERC721/IERC721Receiver.sol";
 
 import {IERC8004IdentityRegistry, IERC8004ReputationRegistry, ERC8004Integration} from "./ERC8004Integration.sol";
 
 /// @title SwarmAgentRegistry
 /// @notice Manages Swarm agent registration on ERC-8004
 /// @dev Creates and tracks ERC-8004 agent identities for the Swarm protocol
-contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
+contract SwarmAgentRegistry is Ownable, ReentrancyGuard, IERC721Receiver {
     using ERC8004Integration for int128;
     using ERC8004Integration for int256;
 
@@ -83,6 +84,14 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
             // For other chains, force explicit configuration.
             revert ZeroAddress();
         }
+    }
+
+    // ============ ERC-721 Receiver ============
+
+    /// @dev ERC-8004 IdentityRegistry mints ERC-721 identities using safe mint semantics.
+    ///      This contract must be able to receive them when it calls `register(...)`.
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
     }
 
     // ============ Agent Registration ============
@@ -234,7 +243,7 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
         if (clients.length == 0) return (0, 0, 2); // Neutral tier for new agents
 
         (uint64 feedbackCount, int128 summaryValue, uint8 decimals) =
-            reputationRegistry.getSummary(agentId, clients, ERC8004Integration.TAG_SWARM_ROUTING, "");
+            reputationRegistry.getSummary(agentId, clients, "", "");
 
         reputationWad = ERC8004Integration.normalizeToWad(summaryValue, decimals);
         tier = ERC8004Integration.getReputationTier(reputationWad);
@@ -251,8 +260,7 @@ contract SwarmAgentRegistry is Ownable, ReentrancyGuard {
         address[] memory clients = reputationRegistry.getClients(agentId);
         if (clients.length == 0) return 1e18; // Neutral weight for new agents
 
-        (uint64 count, int128 summaryValue, uint8 decimals) =
-            reputationRegistry.getSummary(agentId, clients, ERC8004Integration.TAG_SWARM_ROUTING, "");
+        (uint64 count, int128 summaryValue, uint8 decimals) = reputationRegistry.getSummary(agentId, clients, "", "");
 
         if (count == 0) return 1e18;
 
