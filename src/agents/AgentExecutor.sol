@@ -149,6 +149,7 @@ contract AgentExecutor is Ownable {
                     }
                 } catch {
                     _recordExecution(arbAgent, false, 0);
+                    emit AgentExecuted(AgentType.ARBITRAGE, arbAgent, false, 0);
                     // Try backup agent
                     arbAgent = backupAgents[AgentType.ARBITRAGE];
                     if (arbAgent != address(0)) {
@@ -158,9 +159,14 @@ contract AgentExecutor is Ownable {
                             if (arbResult.shouldCapture && arbResult.hookShare > 0) {
                                 result.shouldCapture = true;
                                 result.captureAmount = arbResult.hookShare;
+                                _recordExecution(arbAgent, true, arbResult.hookShare);
+                                emit AgentExecuted(AgentType.ARBITRAGE, arbAgent, true, arbResult.hookShare);
                                 return result;
                             }
-                        } catch {}
+                        } catch {
+                            _recordExecution(arbAgent, false, 0);
+                            emit AgentExecuted(AgentType.ARBITRAGE, arbAgent, false, 0);
+                        }
                     }
                 }
             }
@@ -181,6 +187,7 @@ contract AgentExecutor is Ownable {
                     }
                 } catch {
                     _recordExecution(feeAgent, false, 0);
+                    emit AgentExecuted(AgentType.DYNAMIC_FEE, feeAgent, false, 0);
                 }
             }
         }
@@ -216,6 +223,7 @@ contract AgentExecutor is Ownable {
                     }
                 } catch {
                     _recordExecution(backrunAgent, false, 0);
+                    emit AgentExecuted(AgentType.BACKRUN, backrunAgent, false, 0);
                 }
             }
         }
