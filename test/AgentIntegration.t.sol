@@ -8,8 +8,9 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
+import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 
-import {ISwarmAgent, AgentType, SwapContext, AgentResult} from "../src/interfaces/ISwarmAgent.sol";
+import {ISwarmAgent, IBackrunAgent, AgentType, SwapContext, AgentResult} from "../src/interfaces/ISwarmAgent.sol";
 import {AgentExecutor} from "../src/agents/AgentExecutor.sol";
 import {ArbitrageAgent} from "../src/agents/ArbitrageAgent.sol";
 import {DynamicFeeAgent} from "../src/agents/DynamicFeeAgent.sol";
@@ -172,5 +173,43 @@ contract AgentIntegrationTest is Test {
         assertTrue(arbAgent.getConfidence() > 0);
         assertTrue(feeAgent.getConfidence() > 0);
         assertTrue(backrunAgent.getConfidence() > 0);
+    }
+
+    function test_BackrunDirection_FollowsPriceRelation_WhenPoolBelowOracle() public view {
+        SwapParams memory params = SwapParams({zeroForOne: false, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: 0});
+        SwapContext memory context = SwapContext({
+            poolKey: testPoolKey,
+            poolId: testPoolId,
+            params: params,
+            poolPrice: 900e18,
+            oraclePrice: 1000e18,
+            oracleConfidence: 0,
+            liquidity: 1_000_000 ether,
+            hookData: ""
+        });
+
+        IBackrunAgent.BackrunOpportunity memory opp = backrunAgent.analyzeBackrun(context, 900e18);
+        assertTrue(opp.shouldBackrun, "should detect divergence");
+        assertTrue(!opp.zeroForOne, "when pool below oracle, direction must be oneForZero");
+        assertTrue(opp.backrunAmount > 0, "backrun amount should be positive");
+    }
+
+    function test_BackrunDirection_FollowsPriceRelation_WhenPoolAboveOracle() public view {
+        SwapParams memory params = SwapParams({zeroForOne: true, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: 0});
+        SwapContext memory context = SwapContext({
+            poolKey: testPoolKey,
+            poolId: testPoolId,
+            params: params,
+            poolPrice: 1100e18,
+            oraclePrice: 1000e18,
+            oracleConfidence: 0,
+            liquidity: 1_000_000 ether,
+            hookData: ""
+        });
+
+        IBackrunAgent.BackrunOpportunity memory opp = backrunAgent.analyzeBackrun(context, 1100e18);
+        assertTrue(opp.shouldBackrun, "should detect divergence");
+        assertTrue(opp.zeroForOne, "when pool above oracle, direction must be zeroForOne");
+        assertTrue(opp.backrunAmount > 0, "backrun amount should be positive");
     }
 }
