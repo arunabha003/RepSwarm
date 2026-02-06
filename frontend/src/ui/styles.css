@@ -47,6 +47,79 @@ a {
   margin: 0 auto;
 }
 
+.dash {
+  margin: 6px 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.22), rgba(255, 255, 255, 0.03));
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+  padding: 14px;
+  position: relative;
+  overflow: hidden;
+}
+
+.dash::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  background: radial-gradient(900px 300px at 12% 0%, rgba(58, 134, 255, 0.18), transparent 55%),
+    radial-gradient(700px 240px at 88% 10%, rgba(255, 183, 3, 0.14), transparent 55%);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.dash > * {
+  position: relative;
+}
+
+.dashHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.dashTitle {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.dashSub {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 6px;
+}
+
+.dashGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+@media (min-width: 980px) {
+  .dashGrid {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}
+
+.dashCard {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.16);
+  border-radius: 18px;
+  padding: 12px;
+}
+
+.dashCardTitle {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
+  margin-bottom: 10px;
+  letter-spacing: 0.2px;
+}
+
 .topbar {
   display: flex;
   align-items: flex-start;
@@ -271,4 +344,3 @@ a {
 .toast.bad {
   border-color: rgba(255, 0, 110, 0.26);
 }
-

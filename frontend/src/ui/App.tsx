@@ -2,7 +2,17 @@ import React, { useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { cfg } from "../lib/config";
 import { connectWallet, getReadProvider } from "../lib/wallet";
-import { SwarmCoordinatorAbi, AgentExecutorAbi, LPFeeAccumulatorAbi, FlashLoanBackrunnerAbi } from "../lib/abis";
+import {
+  SwarmCoordinatorAbi,
+  AgentExecutorAbi,
+  LPFeeAccumulatorAbi,
+  FlashLoanBackrunnerAbi,
+  SwarmAgentRegistryAbi,
+  SwarmAgentAbi,
+  OracleRegistryAbi,
+  PoolManagerAbi,
+  ERC20Abi
+} from "../lib/abis";
 import { encodeCandidatePath, toBytes32PoolIdFromPoolKey, type PathKey } from "../lib/encode";
 
 type Tab = "swap" | "intent" | "lp" | "backrun" | "admin";
@@ -18,6 +28,12 @@ function shortAddr(a: string) {
 
 function isZeroAddr(a: string) {
   return a.toLowerCase() === "0x0000000000000000000000000000000000000000";
+}
+
+function sortCurrencies(a: string, b: string): { currency0: string; currency1: string } {
+  const aa = BigInt(a.toLowerCase());
+  const bb = BigInt(b.toLowerCase());
+  return aa < bb ? { currency0: a, currency1: b } : { currency0: b, currency1: a };
 }
 
 function parseBn(s: string): bigint {
@@ -60,6 +76,24 @@ export function App() {
     const p = wallet.status === "connected" ? wallet.signer : readProvider;
     if (!p || isZeroAddr(cfg.flashBackrunner)) return null;
     return new ethers.Contract(cfg.flashBackrunner, FlashLoanBackrunnerAbi, p);
+  }, [wallet, readProvider]);
+
+  const swarmAgentRegistry = useMemo(() => {
+    const p = wallet.status === "connected" ? wallet.signer : readProvider;
+    if (!p || isZeroAddr(cfg.swarmAgentRegistry)) return null;
+    return new ethers.Contract(cfg.swarmAgentRegistry, SwarmAgentRegistryAbi, p);
+  }, [wallet, readProvider]);
+
+  const oracleRegistry = useMemo(() => {
+    const p = wallet.status === "connected" ? wallet.signer : readProvider;
+    if (!p || isZeroAddr(cfg.oracleRegistry)) return null;
+    return new ethers.Contract(cfg.oracleRegistry, OracleRegistryAbi, p);
+  }, [wallet, readProvider]);
+
+  const poolManager = useMemo(() => {
+    const p = wallet.status === "connected" ? wallet.signer : readProvider;
+    if (!p || isZeroAddr(cfg.poolManager)) return null;
+    return new ethers.Contract(cfg.poolManager, PoolManagerAbi, p);
   }, [wallet, readProvider]);
 
   async function onConnect() {
@@ -113,8 +147,18 @@ export function App() {
 
       {toast ? <div className={`toast ${toast.kind}`}>{toast.msg}</div> : null}
 
+      <ProtocolDashboard
+        wallet={wallet}
+        coordinator={coordinator}
+        agentExecutor={agentExecutor}
+        swarmAgentRegistry={swarmAgentRegistry}
+        oracleRegistry={oracleRegistry}
+        poolManager={poolManager}
+        onToast={setToast}
+      />
+
       {tab === "swap" ? (
-        <QuickIntentPanel coordinator={coordinator} onToast={setToast} />
+        <QuickIntentPanel coordinator={coordinator} poolManager={poolManager} onToast={setToast} />
       ) : tab === "intent" ? (
         <IntentDeskPanel coordinator={coordinator} onToast={setToast} />
       ) : tab === "lp" ? (
@@ -122,17 +166,336 @@ export function App() {
       ) : tab === "backrun" ? (
         <BackrunPanel flashBackrunner={flashBackrunner} onToast={setToast} />
       ) : (
-        <AdminPanel coordinator={coordinator} agentExecutor={agentExecutor} onToast={setToast} />
+        <AdminPanel
+          coordinator={coordinator}
+          agentExecutor={agentExecutor}
+          swarmAgentRegistry={swarmAgentRegistry}
+          onToast={setToast}
+        />
       )}
+    </div>
+  );
+}
+
+function fmt18(x: bigint, decimals = 18, sig = 6): string {
+  if (decimals === 18) {
+    return Number(ethers.formatUnits(x, 18)).toPrecision(sig);
+  }
+  return Number(ethers.formatUnits(x, decimals)).toPrecision(sig);
+}
+
+function sqrtPriceX96ToPrice18(sqrtPriceX96: bigint): bigint {
+  // price = (sqrtPriceX96^2 / 2^192) in Q0.0; scale to 1e18
+  const Q192 = 2n ** 192n;
+  const num = sqrtPriceX96 * sqrtPriceX96 * 10n ** 18n;
+  return num / Q192;
+}
+
+function bpsDiff(a: bigint, b: bigint): bigint {
+  // (a-b)/b * 10000
+  if (b === 0n) return 0n;
+  return ((a - b) * 10000n) / b;
+}
+
+function ProtocolDashboard({
+  wallet,
+  coordinator,
+  agentExecutor,
+  swarmAgentRegistry,
+  oracleRegistry,
+  poolManager,
+  onToast
+}: {
+  wallet: WalletState;
+  coordinator: ethers.Contract | null;
+  agentExecutor: ethers.Contract | null;
+  swarmAgentRegistry: ethers.Contract | null;
+  oracleRegistry: ethers.Contract | null;
+  poolManager: ethers.Contract | null;
+  onToast: (t: { kind: "ok" | "bad"; msg: string } | null) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [market, setMarket] = useState<null | {
+    oraclePrice18: bigint;
+    oracleUpdatedAt: bigint;
+    poolPrice18: bigint;
+    tick: number;
+    lpFee: number;
+    liquidity: bigint;
+    diffBps: bigint;
+    poolId: string;
+  }>(null);
+
+  const [balances, setBalances] = useState<null | {
+    eth: bigint;
+    inBal: bigint;
+    outBal: bigint;
+    inSym: string;
+    outSym: string;
+    inDec: number;
+    outDec: number;
+  }>(null);
+
+  const [hookAgents, setHookAgents] = useState<null | {
+    arb: any;
+    fee: any;
+    backrun: any;
+  }>(null);
+
+  const poolId = useMemo(() => {
+    try {
+      const { currency0, currency1 } = sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut);
+      return toBytes32PoolIdFromPoolKey({
+        currency0,
+        currency1,
+        fee: Number(cfg.defaultPool.fee),
+        tickSpacing: Number(cfg.defaultPool.tickSpacing),
+        hooks: cfg.defaultPool.hooks
+      });
+    } catch {
+      return "0x";
+    }
+  }, []);
+
+  async function loadAll() {
+    onToast(null);
+    setBusy(true);
+    try {
+      const addr = wallet.status === "connected" ? wallet.address : null;
+      const rp = (coordinator?.runner ?? agentExecutor?.runner ?? oracleRegistry?.runner ?? poolManager?.runner) as any;
+      const provider = rp?.provider ?? (rp instanceof ethers.JsonRpcProvider ? rp : null);
+
+      // Market data
+      if (oracleRegistry && poolManager && poolId !== "0x") {
+        const [o, s0, liq] = await Promise.all([
+          oracleRegistry.getLatestPrice(cfg.defaultPool.currencyOut, cfg.defaultPool.currencyIn),
+          poolManager.getSlot0(poolId),
+          poolManager.getLiquidity(poolId)
+        ]);
+        const oraclePrice18 = BigInt(o[0]);
+        const oracleUpdatedAt = BigInt(o[1]);
+        const sqrt = BigInt(s0[0]);
+        const tick = Number(s0[1]);
+        const lpFee = Number(s0[3]);
+        const poolPrice18 = sqrtPriceX96ToPrice18(sqrt);
+        const diffBps = bpsDiff(poolPrice18, oraclePrice18);
+        setMarket({
+          oraclePrice18,
+          oracleUpdatedAt,
+          poolPrice18,
+          tick,
+          lpFee,
+          liquidity: BigInt(liq),
+          diffBps,
+          poolId
+        });
+      }
+
+      // Balances
+      if (addr && provider) {
+        const inTok = new ethers.Contract(cfg.defaultPool.currencyIn, ERC20Abi, provider);
+        const outTok = new ethers.Contract(cfg.defaultPool.currencyOut, ERC20Abi, provider);
+        const [eth, inDec, inSym, inBal, outDec, outSym, outBal] = await Promise.all([
+          provider.getBalance(addr),
+          inTok.decimals().catch(() => 18),
+          inTok.symbol().catch(() => "IN"),
+          inTok.balanceOf(addr),
+          outTok.decimals().catch(() => 18),
+          outTok.symbol().catch(() => "OUT"),
+          outTok.balanceOf(addr)
+        ]);
+        setBalances({
+          eth: BigInt(eth),
+          inBal: BigInt(inBal),
+          outBal: BigInt(outBal),
+          inSym: String(inSym),
+          outSym: String(outSym),
+          inDec: Number(inDec),
+          outDec: Number(outDec)
+        });
+      }
+
+      // Hook agent status
+      if (agentExecutor) {
+        const runner = agentExecutor.runner as any;
+        const [arbAddr, feeAddr, backAddr] = await Promise.all([agentExecutor.agents(0), agentExecutor.agents(1), agentExecutor.agents(2)]);
+
+        const loadOne = async (t: "ARB" | "FEE" | "BACKRUN", a: string) => {
+          const base: any = { type: t, addr: String(a) };
+          if (isZeroAddr(String(a))) return base;
+          try {
+            const agent = new ethers.Contract(String(a), SwarmAgentAbi, runner);
+            const [agentId, conf, stats] = await Promise.all([
+              agent.getAgentId().catch(() => 0n),
+              agent.getConfidence().catch(() => 0),
+              agentExecutor.agentStats(String(a)).catch(() => null)
+            ]);
+            base.agentId = String(agentId);
+            base.confidence = Number(conf);
+            if (stats) {
+              base.exec = String(stats[0]);
+              base.ok = String(stats[1]);
+              base.last = String(stats[3]);
+            }
+            if (swarmAgentRegistry) {
+              try {
+                const rep = await swarmAgentRegistry.getAgentReputation(String(a));
+                base.repCount = String(rep[0]);
+                base.repWad = String(rep[1]);
+                base.repTier = String(rep[2]);
+              } catch {
+                // ignore
+              }
+            }
+          } catch {
+            // ignore
+          }
+          return base;
+        };
+
+        const [arb, fee, backrun] = await Promise.all([
+          loadOne("ARB", String(arbAddr)),
+          loadOne("FEE", String(feeAddr)),
+          loadOne("BACKRUN", String(backAddr))
+        ]);
+        setHookAgents({ arb, fee, backrun });
+      }
+    } catch (e: any) {
+      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const spotOut = useMemo(() => {
+    if (!market) return null;
+    // default UI intent is currencyIn (DAI) -> currencyOut (WETH). oracle/pool prices are DAI per WETH.
+    // So: outWETH ~= inDAI / price(DAI per WETH).
+    if (!balances) return null;
+    return {
+      // just a helper, not a real quote
+      per1: (10n ** 18n * 10n ** 18n) / market.poolPrice18 // WETH per 1 DAI (1e18 scaled)
+    };
+  }, [market, balances]);
+
+  return (
+    <div className="dash">
+      <div className="dashHeader">
+        <div>
+          <div className="dashTitle">Dashboard</div>
+          <div className="dashSub mono">
+            poolId {market?.poolId ? shortAddr(market.poolId) : "—"} · oracle {shortAddr(cfg.oracleRegistry)} · poolManager{" "}
+            {shortAddr(cfg.poolManager)}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button className="btn btnPrimary" disabled={busy} onClick={loadAll}>
+            {busy ? "Loading…" : "Refresh Dashboard"}
+          </button>
+        </div>
+      </div>
+
+      <div className="dashGrid">
+        <div className="dashCard">
+          <div className="dashCardTitle mono">Market</div>
+          {!market ? (
+            <div className="muted">Set `VITE_ORACLE_REGISTRY` + `VITE_POOL_MANAGER` and refresh.</div>
+          ) : (
+            <div className="kvs" style={{ marginTop: 0 }}>
+              <div className="kv">
+                <b>Oracle Price</b>
+                <span className="mono">{fmt18(market.oraclePrice18)} DAI/WETH</span>
+              </div>
+              <div className="kv">
+                <b>Pool Spot Price</b>
+                <span className="mono">{fmt18(market.poolPrice18)} DAI/WETH</span>
+              </div>
+              <div className="kv">
+                <b>Diff</b>
+                <span className="mono">{String(market.diffBps)} bps</span>
+              </div>
+              <div className="kv">
+                <b>Tick</b>
+                <span className="mono">{String(market.tick)}</span>
+              </div>
+              <div className="kv">
+                <b>LP Fee (slot0)</b>
+                <span className="mono">{String(market.lpFee)}</span>
+              </div>
+              <div className="kv">
+                <b>Liquidity</b>
+                <span className="mono">{String(market.liquidity)}</span>
+              </div>
+              {spotOut ? (
+                <div className="kv">
+                  <b>Spot (WETH / 1 DAI)</b>
+                  <span className="mono">{fmt18(spotOut.per1)} WETH</span>
+                </div>
+              ) : null}
+              <div className="muted" style={{ marginTop: 8 }}>
+                Spot numbers are informational only (no fees, no slippage, no hook effects).
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="dashCard">
+          <div className="dashCardTitle mono">Wallet</div>
+          {wallet.status !== "connected" ? (
+            <div className="muted">Connect wallet to see balances.</div>
+          ) : !balances ? (
+            <div className="muted">Refresh dashboard to load balances.</div>
+          ) : (
+            <div className="kvs" style={{ marginTop: 0 }}>
+              <div className="kv">
+                <b>ETH</b>
+                <span className="mono">{fmt18(balances.eth)} ETH</span>
+              </div>
+              <div className="kv">
+                <b>{balances.inSym}</b>
+                <span className="mono">{fmt18(balances.inBal, balances.inDec)} {balances.inSym}</span>
+              </div>
+              <div className="kv">
+                <b>{balances.outSym}</b>
+                <span className="mono">{fmt18(balances.outBal, balances.outDec)} {balances.outSym}</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="dashCard">
+          <div className="dashCardTitle mono">Hook Agents</div>
+          {!hookAgents ? (
+            <div className="muted">Refresh dashboard to load hook agent status.</div>
+          ) : (
+            <div className="kvs" style={{ marginTop: 0 }}>
+              {[hookAgents.arb, hookAgents.fee, hookAgents.backrun].map((a: any) => (
+                <div className="kv" key={a.type}>
+                  <b>{a.type}</b>
+                  <span className="mono">
+                    {shortAddr(a.addr)} · id {a.agentId ?? "—"} · conf {a.confidence ?? "—"} · ok/exec {a.ok ?? "—"}/{a.exec ?? "—"} · repTier{" "}
+                    {a.repTier ?? "—"} · repCount {a.repCount ?? "—"}
+                  </span>
+                </div>
+              ))}
+              <div className="muted" style={{ marginTop: 8 }}>
+                `id` is the agent's ERC-8004 identity ID stored in the agent contract (0 means "not linked").
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
 function QuickIntentPanel({
   coordinator,
+  poolManager,
   onToast
 }: {
   coordinator: ethers.Contract | null;
+  poolManager: ethers.Contract | null;
   onToast: (t: { kind: "ok" | "bad"; msg: string } | null) => void;
 }) {
   const [currencyIn, setCurrencyIn] = useState(cfg.defaultPool.currencyIn);
@@ -148,6 +511,13 @@ function QuickIntentPanel({
   const [hooks, setHooks] = useState(cfg.defaultPool.hooks);
   const [lastIntentId, setLastIntentId] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [tokenMeta, setTokenMeta] = useState<{ symbol: string; decimals: number } | null>(null);
+  const [tokenOutMeta, setTokenOutMeta] = useState<{ symbol: string; decimals: number } | null>(null);
+  const [bal, setBal] = useState<bigint | null>(null);
+  const [allow, setAllow] = useState<bigint | null>(null);
+  const [preview, setPreview] = useState<null | { poolId: string; price18: bigint; estOut: bigint; note: string }>(
+    null
+  );
 
   const candidateBytes = useMemo(() => {
     const path: PathKey[] = [
@@ -165,6 +535,91 @@ function QuickIntentPanel({
       return "0x";
     }
   }, [currencyOut, fee, tickSpacing, hooks]);
+
+  async function refreshAllowanceAndBalance() {
+    try {
+      if (!coordinator) return;
+      const runner = coordinator.runner as any;
+      if (!runner) return;
+      const signerAddr = await runner.getAddress?.();
+      if (!signerAddr) return;
+      const token = new ethers.Contract(currencyIn, ERC20Abi, runner);
+      const tokenOut = new ethers.Contract(currencyOut, ERC20Abi, runner);
+      const [decimals, symbol, balance, allowance] = await Promise.all([
+        token.decimals().catch(() => 18),
+        token.symbol().catch(() => "TOKEN"),
+        token.balanceOf(signerAddr),
+        token.allowance(signerAddr, await coordinator.getAddress())
+      ]);
+      setTokenMeta({ symbol: String(symbol), decimals: Number(decimals) });
+      setBal(BigInt(balance));
+      setAllow(BigInt(allowance));
+
+      const [outDecimals, outSymbol] = await Promise.all([
+        tokenOut.decimals().catch(() => 18),
+        tokenOut.symbol().catch(() => "TOKEN_OUT")
+      ]);
+      setTokenOutMeta({ symbol: String(outSymbol), decimals: Number(outDecimals) });
+    } catch {
+      // Ignore; token might be native or non-standard.
+    }
+  }
+
+  async function approveMax() {
+    if (!coordinator) return onToast({ kind: "bad", msg: "Coordinator not configured." });
+    onToast(null);
+    setBusy(true);
+    try {
+      const runner = coordinator.runner as any;
+      const token = new ethers.Contract(currencyIn, ERC20Abi, runner);
+      const tx = await token.approve(await coordinator.getAddress(), ethers.MaxUint256);
+      const receipt = await tx.wait(1);
+      onToast({ kind: "ok", msg: `Approved. tx=${receipt.hash}` });
+      await refreshAllowanceAndBalance();
+    } catch (e: any) {
+      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewSpot() {
+    if (!poolManager) return onToast({ kind: "bad", msg: "PoolManager not configured (set VITE_POOL_MANAGER)." });
+    onToast(null);
+    setBusy(true);
+    try {
+      const { currency0, currency1 } = sortCurrencies(currencyIn, currencyOut);
+      const pid = toBytes32PoolIdFromPoolKey({
+        currency0,
+        currency1,
+        fee: Number(fee),
+        tickSpacing: Number(tickSpacing),
+        hooks
+      });
+      const s0 = await poolManager.getSlot0(pid);
+      const sqrt = BigInt(s0[0]);
+      const price18 = sqrtPriceX96ToPrice18(sqrt); // currency1 per currency0
+
+      const amtIn = parseBn(amountIn);
+      let estOut = 0n;
+      let note = "spot estimate (no slippage/fees)";
+      if (currencyIn.toLowerCase() === currency0.toLowerCase() && currencyOut.toLowerCase() === currency1.toLowerCase()) {
+        // in = currency0, out = currency1: out ~= in * price
+        estOut = (amtIn * price18) / 10n ** 18n;
+      } else if (currencyIn.toLowerCase() === currency1.toLowerCase() && currencyOut.toLowerCase() === currency0.toLowerCase()) {
+        // in = currency1, out = currency0: out ~= in / price
+        if (price18 > 0n) estOut = (amtIn * 10n ** 18n) / price18;
+      } else {
+        note = "poolKey mismatch (check tokens)";
+      }
+
+      setPreview({ poolId: pid, price18, estOut, note });
+    } catch (e: any) {
+      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function create() {
     if (!coordinator) return onToast({ kind: "bad", msg: "Coordinator not configured (set VITE_COORDINATOR)." });
@@ -198,6 +653,7 @@ function QuickIntentPanel({
       const intentId = ev ? String(ev.args.intentId) : "(unknown)";
       setLastIntentId(intentId);
       onToast({ kind: "ok", msg: `Intent created. intentId=${intentId} tx=${receipt.hash}` });
+      await refreshAllowanceAndBalance();
     } catch (e: any) {
       onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
     } finally {
@@ -211,6 +667,28 @@ function QuickIntentPanel({
         <div className="cardHeader">
           <h2>Create MEV-Protected Intent (1-hop)</h2>
           <span className="pill">coordinator {shortAddr(cfg.coordinator)}</span>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <button className="btn" disabled={busy} onClick={refreshAllowanceAndBalance}>
+            Refresh Balance/Allowance
+          </button>
+          <button className="btn" disabled={busy} onClick={previewSpot}>
+            Spot Preview
+          </button>
+          <button className="btn btnPrimary" disabled={busy} onClick={approveMax}>
+            Approve In Token
+          </button>
+          {tokenMeta ? <span className="pill ok">{tokenMeta.symbol}</span> : <span className="pill">token?</span>}
+        </div>
+        <div className="kvs" style={{ marginTop: 0 }}>
+          <div className="kv">
+            <b>Balance</b>
+            <span className="mono">{bal === null ? "—" : String(bal)}</span>
+          </div>
+          <div className="kv">
+            <b>Allowance → Coordinator</b>
+            <span className="mono">{allow === null ? "—" : String(allow)}</span>
+          </div>
         </div>
         <div className="grid2">
           <div className="field">
@@ -270,6 +748,31 @@ function QuickIntentPanel({
           </button>
           {lastIntentId ? <span className="pill ok">last intentId {lastIntentId}</span> : null}
         </div>
+
+        {preview ? (
+          <div className="toast" style={{ marginTop: 12 }}>
+            <div style={{ color: "rgba(255,255,255,0.78)", marginBottom: 6 }}>Spot Preview</div>
+            <div className="kvs" style={{ marginTop: 0 }}>
+              <div className="kv">
+                <b>poolId</b>
+                <span className="mono">{preview.poolId}</span>
+              </div>
+              <div className="kv">
+                <b>spot price (currency1/currency0)</b>
+                <span className="mono">{fmt18(preview.price18)}</span>
+              </div>
+              <div className="kv">
+                <b>estimated out</b>
+                <span className="mono">
+                  {tokenOutMeta ? `${fmt18(preview.estOut, tokenOutMeta.decimals)} ${tokenOutMeta.symbol}` : String(preview.estOut)}
+                </span>
+              </div>
+            </div>
+            <div className="muted" style={{ marginTop: 8 }}>
+              {preview.note}
+            </div>
+          </div>
+        ) : null}
 
         <div className="toast" style={{ marginTop: 12 }}>
           <div style={{ color: "rgba(255,255,255,0.78)", marginBottom: 6 }}>Candidate path bytes (auto-built):</div>
@@ -777,16 +1280,31 @@ function BackrunPanel({
 function AdminPanel({
   coordinator,
   agentExecutor,
+  swarmAgentRegistry,
   onToast
 }: {
   coordinator: ethers.Contract | null;
   agentExecutor: ethers.Contract | null;
+  swarmAgentRegistry: ethers.Contract | null;
   onToast: (t: { kind: "ok" | "bad"; msg: string } | null) => void;
 }) {
   const [agentType, setAgentType] = useState("0");
   const [agentAddr, setAgentAddr] = useState("0x");
   const [backupAddr, setBackupAddr] = useState("0x");
   const [enabled, setEnabled] = useState(true);
+
+  const [loadedHookAgents, setLoadedHookAgents] = useState<{ arb: string; fee: string; backrun: string } | null>(
+    null
+  );
+  const [arbId, setArbId] = useState<string>("—");
+  const [feeId, setFeeId] = useState<string>("—");
+  const [backrunId, setBackrunId] = useState<string>("—");
+
+  const [newAgentAddr, setNewAgentAddr] = useState("0x");
+  const [newAgentName, setNewAgentName] = useState("Swarm Hook Agent");
+  const [newAgentDesc, setNewAgentDesc] = useState("Hook agent");
+  const [newAgentTypeStr, setNewAgentTypeStr] = useState("generic");
+  const [newAgentVersion, setNewAgentVersion] = useState("1.0.0");
 
   const [treasury, setTreasury] = useState("0x");
   const [enfId, setEnfId] = useState(false);
@@ -803,6 +1321,13 @@ function AdminPanel({
   const [clientsCsv, setClientsCsv] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const [switchRepRegistry, setSwitchRepRegistry] = useState("0x");
+  const [switchTag1, setSwitchTag1] = useState("swarm-hook");
+  const [switchTag2, setSwitchTag2] = useState("hook-agents");
+  const [switchMinRepWad, setSwitchMinRepWad] = useState("0");
+  const [switchClientsCsv, setSwitchClientsCsv] = useState("");
+  const [switchEnabled, setSwitchEnabled] = useState(false);
+
   async function ex(fn: () => Promise<any>) {
     onToast(null);
     setBusy(true);
@@ -810,6 +1335,71 @@ function AdminPanel({
       const tx = await fn();
       const receipt = await tx.wait(1);
       onToast({ kind: "ok", msg: `tx=${receipt.hash}` });
+    } catch (e: any) {
+      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadCurrentHookAgents() {
+    if (!agentExecutor) return onToast({ kind: "bad", msg: "AgentExecutor not configured." });
+    onToast(null);
+    setBusy(true);
+    try {
+      const [arb, fee, backrun] = await Promise.all([agentExecutor.agents(0), agentExecutor.agents(1), agentExecutor.agents(2)]);
+      const next = { arb: String(arb), fee: String(fee), backrun: String(backrun) };
+      setLoadedHookAgents(next);
+
+      const runner = agentExecutor.runner as any;
+      const tryGetId = async (addr: string) => {
+        try {
+          if (isZeroAddr(addr)) return "0";
+          const a = new ethers.Contract(addr, SwarmAgentAbi, runner);
+          const id = await a.getAgentId();
+          return String(id);
+        } catch {
+          return "?";
+        }
+      };
+      const [a0, a1, a2] = await Promise.all([tryGetId(next.arb), tryGetId(next.fee), tryGetId(next.backrun)]);
+      setArbId(a0);
+      setFeeId(a1);
+      setBackrunId(a2);
+      onToast({ kind: "ok", msg: "Loaded hook agents from AgentExecutor." });
+    } catch (e: any) {
+      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function registerHookAgentOnERC8004(agentAddress: string, name: string, description: string) {
+    if (!swarmAgentRegistry) return onToast({ kind: "bad", msg: "Set VITE_SWARM_AGENT_REGISTRY to use ERC-8004 registration." });
+    if (isZeroAddr(agentAddress)) return onToast({ kind: "bad", msg: "Agent address is 0x0." });
+    onToast(null);
+    setBusy(true);
+    try {
+      const runner = swarmAgentRegistry.runner as any;
+      const idReg = await swarmAgentRegistry.identityRegistry();
+
+      // 1) Register identity in the official ERC-8004 identity registry (via SwarmAgentRegistry helper).
+      try {
+        const tx = await swarmAgentRegistry.registerAgent(agentAddress, name, description, newAgentTypeStr, newAgentVersion);
+        await tx.wait(1);
+      } catch {
+        // If already registered, this reverts; we'll just read the existing ID below.
+      }
+
+      const agentId = await swarmAgentRegistry.agentIdentities(agentAddress);
+      if (BigInt(agentId) === 0n) throw new Error("ERC-8004 register failed (agentId=0)");
+
+      // 2) Bind that agentId into the hook-agent contract so it can be reputation-scored later.
+      const agent = new ethers.Contract(agentAddress, SwarmAgentAbi, runner);
+      const tx2 = await agent.configureIdentity(agentId, idReg);
+      const r2 = await tx2.wait(1);
+      onToast({ kind: "ok", msg: `ERC-8004 linked. agentId=${String(agentId)} tx=${r2.hash}` });
+      await loadCurrentHookAgents();
     } catch (e: any) {
       onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
     } finally {
@@ -828,6 +1418,36 @@ function AdminPanel({
           <p className="muted">Set `VITE_AGENT_EXECUTOR` to use this panel.</p>
         ) : (
           <>
+            <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+              <button className="btn btnPrimary" disabled={busy} onClick={loadCurrentHookAgents}>
+                Load Hook Agents
+              </button>
+              <span className="pill">registry {shortAddr(cfg.swarmAgentRegistry)}</span>
+            </div>
+
+            {loadedHookAgents ? (
+              <div className="toast" style={{ marginBottom: 12 }}>
+                <div style={{ color: "rgba(255,255,255,0.78)", marginBottom: 8 }}>Current Hook Agents (from AgentExecutor)</div>
+                <div className="kvs" style={{ marginTop: 0 }}>
+                  <div className="kv">
+                    <b>ARBITRAGE</b>
+                    <span className="mono">{shortAddr(loadedHookAgents.arb)} · agentId {arbId}</span>
+                  </div>
+                  <div className="kv">
+                    <b>DYNAMIC_FEE</b>
+                    <span className="mono">{shortAddr(loadedHookAgents.fee)} · agentId {feeId}</span>
+                  </div>
+                  <div className="kv">
+                    <b>BACKRUN</b>
+                    <span className="mono">{shortAddr(loadedHookAgents.backrun)} · agentId {backrunId}</span>
+                  </div>
+                </div>
+                <div className="muted" style={{ marginTop: 10 }}>
+                  These IDs should be set by the deploy script. If they are `0`, redeploy with `REGISTER_ERC8004_HOOK_AGENTS=true`.
+                </div>
+              </div>
+            ) : null}
+
             <div className="grid2">
               <div className="field">
                 <label>Agent Type (0=ARB,1=FEE,2=BACKRUN)</label>
@@ -856,6 +1476,22 @@ function AdminPanel({
               <button className="btn" disabled={busy} onClick={() => ex(() => agentExecutor.setBackupAgent(Number(agentType), backupAddr))}>
                 Set Backup
               </button>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={async () => {
+                  if (!agentExecutor) return;
+                  try {
+                    const b = await agentExecutor.backupAgents(Number(agentType));
+                    if (isZeroAddr(String(b))) return onToast({ kind: "bad", msg: "No backup agent set for this type." });
+                    await ex(() => agentExecutor.registerAgent(Number(agentType), String(b)));
+                  } catch (e: any) {
+                    onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+                  }
+                }}
+              >
+                Switch To Backup Now
+              </button>
               <button className="btn" disabled={busy} onClick={() => ex(() => agentExecutor.setAgentEnabled(Number(agentType), enabled))}>
                 Set Enabled
               </button>
@@ -863,6 +1499,125 @@ function AdminPanel({
                 Check & Switch (Reputation)
               </button>
             </div>
+
+            <div style={{ height: 12 }} />
+            <div className="cardHeader">
+              <h2>Reputation Threshold Switch (Hook Agents)</h2>
+              <span className="pill">owner-only · off-path</span>
+            </div>
+            <div className="grid2">
+              <div className="field">
+                <label>Agent Type</label>
+                <input value={agentType} onChange={(e) => setAgentType(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Reputation Registry</label>
+                <input value={switchRepRegistry} onChange={(e) => setSwitchRepRegistry(e.target.value)} placeholder="0x…" />
+              </div>
+              <div className="field">
+                <label>tag1</label>
+                <input value={switchTag1} onChange={(e) => setSwitchTag1(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>tag2</label>
+                <input value={switchTag2} onChange={(e) => setSwitchTag2(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>minReputationWad (int256)</label>
+                <input value={switchMinRepWad} onChange={(e) => setSwitchMinRepWad(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Enabled</label>
+                <select value={String(switchEnabled)} onChange={(e) => setSwitchEnabled(e.target.value === "true")}>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              </div>
+              <div className="field" style={{ gridColumn: "1 / -1" }}>
+                <label>clients (comma-separated)</label>
+                <input value={switchClientsCsv} onChange={(e) => setSwitchClientsCsv(e.target.value)} placeholder="0xabc...,0xdef..." />
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={() =>
+                  ex(() =>
+                    agentExecutor.setReputationSwitchConfig(
+                      Number(agentType),
+                      switchRepRegistry,
+                      switchTag1,
+                      switchTag2,
+                      BigInt(switchMinRepWad),
+                      switchEnabled
+                    )
+                  )
+                }
+              >
+                Set Switch Config
+              </button>
+              <button
+                className="btn btnPrimary"
+                disabled={busy}
+                onClick={() =>
+                  ex(() =>
+                    agentExecutor.setReputationSwitchClients(
+                      Number(agentType),
+                      switchClientsCsv.split(",").map((x) => x.trim()).filter(Boolean)
+                    )
+                  )
+                }
+              >
+                Set Switch Clients
+              </button>
+            </div>
+
+            <div style={{ height: 12 }} />
+            <div className="cardHeader">
+              <h2>Onboard New Hook Agent (ERC-8004)</h2>
+              <span className="pill">advanced</span>
+            </div>
+            {!swarmAgentRegistry ? (
+              <p className="muted">Set `VITE_SWARM_AGENT_REGISTRY` to use this section.</p>
+            ) : (
+              <>
+                <div className="grid2">
+                  <div className="field">
+                    <label>New Agent Address</label>
+                    <input value={newAgentAddr} onChange={(e) => setNewAgentAddr(e.target.value)} />
+                  </div>
+                  <div className="field">
+                    <label>Name</label>
+                    <input value={newAgentName} onChange={(e) => setNewAgentName(e.target.value)} />
+                  </div>
+                  <div className="field" style={{ gridColumn: "1 / -1" }}>
+                    <label>Description</label>
+                    <input value={newAgentDesc} onChange={(e) => setNewAgentDesc(e.target.value)} />
+                  </div>
+                  <div className="field">
+                    <label>agentType (ERC-8004 metadata)</label>
+                    <input value={newAgentTypeStr} onChange={(e) => setNewAgentTypeStr(e.target.value)} />
+                  </div>
+                  <div className="field">
+                    <label>version</label>
+                    <input value={newAgentVersion} onChange={(e) => setNewAgentVersion(e.target.value)} />
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                  <button
+                    className="btn btnPrimary"
+                    disabled={busy}
+                    onClick={() => registerHookAgentOnERC8004(newAgentAddr, newAgentName, newAgentDesc)}
+                  >
+                    Register + Link ERC-8004
+                  </button>
+                  <span className="muted">
+                    After linking, use “Register/Switch Agent” above to swap it into AgentExecutor.
+                  </span>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -990,4 +1745,3 @@ function AdminPanel({
     </div>
   );
 }
-

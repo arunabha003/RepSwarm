@@ -31,6 +31,7 @@ export const AgentExecutorAbi = [
   "function agents(uint8 agentType) view returns (address)",
   "function backupAgents(uint8 agentType) view returns (address)",
   "function agentEnabled(uint8 agentType) view returns (bool)",
+  "function agentStats(address agent) view returns (uint256 executionCount,uint256 successCount,uint256 totalValueProcessed,uint64 lastExecution)",
   "function registerAgent(uint8 agentType,address agent)",
   "function setBackupAgent(uint8 agentType,address agent)",
   "function setAgentEnabled(uint8 agentType,bool enabled)",
@@ -38,6 +39,35 @@ export const AgentExecutorAbi = [
   "function setReputationSwitchClients(uint8 agentType,address[] clients)",
   "function checkAndSwitchAgentIfBelowThreshold(uint8 agentType) returns (bool)",
   "function getReputationSwitchConfig(uint8 agentType) view returns (address registry,int256 minReputationWad,bool enabled,uint256 clientCount,string tag1,string tag2)"
+];
+
+export const SwarmAgentRegistryAbi = [
+  "event AgentRegistered(address indexed agentContract,uint256 indexed agentId,string name,string agentType)",
+  "function owner() view returns (address)",
+  "function identityRegistry() view returns (address)",
+  "function reputationRegistry() view returns (address)",
+  "function agentIdentities(address agentContract) view returns (uint256)",
+  "function registerAgent(address agentContract,string name,string description,string agentType,string version) returns (uint256)",
+  "function getAgentReputation(address agentContract) view returns (uint64 count,int256 reputationWad,uint8 tier)",
+  "function getReputationWeight(address agentContract) view returns (uint256 weight)"
+];
+
+export const SwarmAgentAbi = [
+  "function agentType() view returns (uint8)",
+  "function getAgentId() view returns (uint256)",
+  "function identityRegistry() view returns (address)",
+  "function getConfidence() view returns (uint8)",
+  "function configureIdentity(uint256 agentId,address identityRegistry)"
+];
+
+export const OracleRegistryAbi = [
+  "function getLatestPrice(address base,address quote) view returns (uint256 price,uint256 updatedAt)",
+  "function getPriceFeed(address base,address quote) view returns (address)"
+];
+
+export const PoolManagerAbi = [
+  "function getSlot0(bytes32 poolId) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)",
+  "function getLiquidity(bytes32 poolId) view returns (uint128)"
 ];
 
 export const LPFeeAccumulatorAbi = [
@@ -57,3 +87,11 @@ export const FlashLoanBackrunnerAbi = [
   "function executeBackrunWithCapital(bytes32 poolId,uint256 amountIn,uint256 minProfit)"
 ];
 
+export const ERC20Abi = [
+  "function name() view returns (string)",
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+  "function balanceOf(address) view returns (uint256)",
+  "function allowance(address owner,address spender) view returns (uint256)",
+  "function approve(address spender,uint256 amount) returns (bool)"
+];

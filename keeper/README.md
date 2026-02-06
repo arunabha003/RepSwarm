@@ -36,9 +36,30 @@ cd keeper
 npm run start
 ```
 
+## Hook-Agent Scoring (ERC-8004)
+
+If you want hook agents to accumulate **official ERC-8004 reputation** (so the admin can switch them when they fall below a threshold), run the scoring keeper too:
+
+1. In `keeper/.env`, set:
+
+- `AGENT_EXECUTOR_ADDRESS`
+- `ERC8004_REPUTATION_REGISTRY` (Sepolia default is in `.env.example`)
+- `SCORE_TAG1` / `SCORE_TAG2`
+
+2. Configure AgentExecutor switching to use the keeper EOA as a client address (in the frontend Admin tab):
+
+- `Set Switch Config`
+- `Set Switch Clients` = `<KEEPER_EOA_ADDRESS>`
+
+3. Run:
+
+```bash
+cd keeper
+npm run score
+```
+
 ## Options
 
 - `DRY_RUN=true` to simulate only (no txs).
 - `MAX_FLASHLOAN_AMOUNT_WEI` to cap execution size (recommended for testnets).
 - `MIN_PROFIT_WEI` to require extra profit on top of repaying the flashloan (defaults to 0).
-

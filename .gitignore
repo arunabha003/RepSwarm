@@ -3,9 +3,13 @@
 /out/
 # Local env
 .env
+frontend/.env
+keeper/.env
 # Local planning
 plan.md
 
 broadcast/
 node_modules/
 .next/
+frontend/dist/
+frontend/.vite/

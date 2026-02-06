@@ -15,6 +15,9 @@ export const cfg = {
   agentExecutor: addr("VITE_AGENT_EXECUTOR"),
   lpAccumulator: addr("VITE_LP_ACCUMULATOR"),
   flashBackrunner: addr("VITE_FLASH_BACKRUNNER"),
+  swarmAgentRegistry: addr("VITE_SWARM_AGENT_REGISTRY"),
+  oracleRegistry: addr("VITE_ORACLE_REGISTRY"),
+  poolManager: addr("VITE_POOL_MANAGER"),
   defaultPool: {
     currencyIn: addr("VITE_POOL_CURRENCY_IN"),
     currencyOut: addr("VITE_POOL_CURRENCY_OUT"),
@@ -23,4 +26,3 @@ export const cfg = {
     hooks: addr("VITE_POOL_HOOKS")
   }
 };
-
