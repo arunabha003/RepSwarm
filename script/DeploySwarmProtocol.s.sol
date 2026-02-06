@@ -31,7 +31,8 @@ contract DeploySwarmProtocol is Script {
 
     // ============ Sepolia Addresses ============
 
-    address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
+    // Uniswap v4 PoolManager on Sepolia.
+    address constant POOL_MANAGER = 0x8C4BcBE6b9eF47855f97E675296FA3F6fafa5F1A;
     address constant ERC8004_IDENTITY = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
     address constant ERC8004_REPUTATION = 0x8004B663056A597Dffe9eCcC1965A193B7388713;
 
@@ -50,15 +51,18 @@ contract DeploySwarmProtocol is Script {
         address deployer = vm.addr(deployerPrivateKey);
 
         console.log("=== Swarm Protocol Deployment ===");
-        console.log("Deployer:", deployer);
-        console.log("Pool Manager:", POOL_MANAGER);
+        console.log("Deployer:");
+        console.log(deployer);
+        console.log("Pool Manager:");
+        console.log(POOL_MANAGER);
 
         vm.startBroadcast(deployerPrivateKey);
 
         // 1. Deploy Oracle Registry
         console.log("\n1. Deploying Oracle Registry...");
         oracleRegistry = new OracleRegistry();
-        console.log("   Oracle Registry:", address(oracleRegistry));
+        console.log("   Oracle Registry:");
+        console.log(address(oracleRegistry));
 
         // 2. Deploy LP Fee Accumulator
         console.log("\n2. Deploying LP Fee Accumulator...");
@@ -67,17 +71,20 @@ contract DeploySwarmProtocol is Script {
             0.001 ether, // Min donation threshold
             1 hours // Min donation interval
         );
-        console.log("   LP Fee Accumulator:", address(lpFeeAccumulator));
+        console.log("   LP Fee Accumulator:");
+        console.log(address(lpFeeAccumulator));
 
         // 3. Deploy Agent Executor
         console.log("\n3. Deploying Agent Executor...");
         agentExecutor = new AgentExecutor();
-        console.log("   Agent Executor:", address(agentExecutor));
+        console.log("   Agent Executor:");
+        console.log(address(agentExecutor));
 
         // 4. Deploy Hook with mined address
         console.log("\n4. Mining hook address...");
         hook = _deployHook(deployer);
-        console.log("   SwarmHook:", address(hook));
+        console.log("   SwarmHook:");
+        console.log(address(hook));
 
         // 5. Deploy Agents
         console.log("\n5. Deploying Agents...");
@@ -89,15 +96,18 @@ contract DeploySwarmProtocol is Script {
             8000, // 80% hook share
             50 // 0.5% min divergence
         );
-        console.log("   Arbitrage Agent:", address(arbitrageAgent));
+        console.log("   Arbitrage Agent:");
+        console.log(address(arbitrageAgent));
 
         // Dynamic Fee Agent
         dynamicFeeAgent = new DynamicFeeAgent(IPoolManager(POOL_MANAGER), deployer);
-        console.log("   Dynamic Fee Agent:", address(dynamicFeeAgent));
+        console.log("   Dynamic Fee Agent:");
+        console.log(address(dynamicFeeAgent));
 
         // Backrun Agent
         backrunAgent = new BackrunAgent(IPoolManager(POOL_MANAGER), deployer);
-        console.log("   Backrun Agent:", address(backrunAgent));
+        console.log("   Backrun Agent:");
+        console.log(address(backrunAgent));
 
         // 5b. Deploy Flash Loan Backrunner (executor)
         console.log("\n5b. Deploying FlashLoanBackrunner...");
@@ -105,7 +115,8 @@ contract DeploySwarmProtocol is Script {
             IPoolManager(POOL_MANAGER),
             address(0) // default to Aave Sepolia inside contract
         );
-        console.log("   FlashLoanBackrunner:", address(flashBackrunner));
+        console.log("   FlashLoanBackrunner:");
+        console.log(address(flashBackrunner));
 
         // 6. Configure Agent Executor
         console.log("\n6. Configuring Agent Executor...");
@@ -186,19 +197,28 @@ contract DeploySwarmProtocol is Script {
         console.log("========================================");
         console.log("");
         console.log("Core Contracts:");
-        console.log("  SwarmHook:         ", address(hook));
-        console.log("  AgentExecutor:     ", address(agentExecutor));
-        console.log("  LPFeeAccumulator:  ", address(lpFeeAccumulator));
-        console.log("  OracleRegistry:    ", address(oracleRegistry));
+        console.log("  SwarmHook:");
+        console.log(address(hook));
+        console.log("  AgentExecutor:");
+        console.log(address(agentExecutor));
+        console.log("  LPFeeAccumulator:");
+        console.log(address(lpFeeAccumulator));
+        console.log("  OracleRegistry:");
+        console.log(address(oracleRegistry));
         console.log("");
         console.log("Agents:");
-        console.log("  ArbitrageAgent:    ", address(arbitrageAgent));
-        console.log("  DynamicFeeAgent:   ", address(dynamicFeeAgent));
-        console.log("  BackrunAgent:      ", address(backrunAgent));
+        console.log("  ArbitrageAgent:");
+        console.log(address(arbitrageAgent));
+        console.log("  DynamicFeeAgent:");
+        console.log(address(dynamicFeeAgent));
+        console.log("  BackrunAgent:");
+        console.log(address(backrunAgent));
         console.log("");
         console.log("ERC-8004 (Sepolia):");
-        console.log("  Identity Registry: ", ERC8004_IDENTITY);
-        console.log("  Reputation Registry:", ERC8004_REPUTATION);
+        console.log("  Identity Registry:");
+        console.log(ERC8004_IDENTITY);
+        console.log("  Reputation Registry:");
+        console.log(ERC8004_REPUTATION);
         console.log("");
         console.log("========================================");
         console.log("");
