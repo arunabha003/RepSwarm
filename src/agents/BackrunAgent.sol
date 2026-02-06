@@ -205,8 +205,10 @@ contract BackrunAgent is SwarmAgentBase, IBackrunAgent {
             return opportunity;
         }
 
-        // Determine backrun direction (opposite of original swap)
-        bool backrunZeroForOne = !context.params.zeroForOne;
+        // Determine backrun direction from actual post-swap price relation.
+        // If pool is above oracle, sell token0 (zeroForOne) to push price down.
+        // If pool is below oracle, sell token1 (oneForZero) to push price up.
+        bool backrunZeroForOne = newPoolPrice > context.oraclePrice;
         opportunity.zeroForOne = backrunZeroForOne;
         opportunity.targetPrice = context.oraclePrice;
 
