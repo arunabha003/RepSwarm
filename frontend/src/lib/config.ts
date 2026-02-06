@@ -15,6 +15,8 @@ export const cfg = {
   agentExecutor: addr("VITE_AGENT_EXECUTOR"),
   lpAccumulator: addr("VITE_LP_ACCUMULATOR"),
   flashBackrunner: addr("VITE_FLASH_BACKRUNNER"),
+  flashBackrunExecutorAgent: addr("VITE_FLASH_BACKRUN_EXECUTOR_AGENT"),
+  simpleRouteAgent: addr("VITE_SIMPLE_ROUTE_AGENT"),
   swarmAgentRegistry: addr("VITE_SWARM_AGENT_REGISTRY"),
   oracleRegistry: addr("VITE_ORACLE_REGISTRY"),
   poolManager: addr("VITE_POOL_MANAGER"),

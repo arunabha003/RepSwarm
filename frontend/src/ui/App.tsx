@@ -7,6 +7,8 @@ import {
   AgentExecutorAbi,
   LPFeeAccumulatorAbi,
   FlashLoanBackrunnerAbi,
+  FlashBackrunExecutorAgentAbi,
+  SimpleRouteAgentAbi,
   SwarmAgentRegistryAbi,
   SwarmAgentAbi,
   OracleRegistryAbi,
@@ -21,6 +23,8 @@ type WalletState =
   | { status: "disconnected" }
   | { status: "connected"; signer: ethers.Signer; address: string; chainId: number };
 
+// ==================== Helper Functions ====================
+
 function shortAddr(a: string) {
   if (!a || a.length < 10) return a;
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
@@ -28,6 +32,30 @@ function shortAddr(a: string) {
 
 function isZeroAddr(a: string) {
   return a.toLowerCase() === "0x0000000000000000000000000000000000000000";
+}
+
+function extractRevertData(e: any): string | null {
+  const cands = [e?.data, e?.error?.data, e?.info?.error?.data, e?.cause?.data];
+  for (const c of cands) {
+    if (typeof c === "string" && c.startsWith("0x")) return c;
+  }
+  return null;
+}
+
+function fmtContractError(e: any, contract: ethers.Contract | null): string {
+  const data = extractRevertData(e);
+  if (data && contract?.interface?.parseError) {
+    try {
+      const parsed: any = contract.interface.parseError(data);
+      if (parsed && parsed.name) {
+        const args = parsed?.args ? Array.from(parsed.args).map((x: any) => String(x)).join(", ") : "";
+        return args ? `${parsed.name}(${args})` : String(parsed.name);
+      }
+    } catch {
+      // ignore; fall back below
+    }
+  }
+  return e?.shortMessage ?? e?.reason ?? e?.message ?? String(e);
 }
 
 function sortCurrencies(a: string, b: string): { currency0: string; currency1: string } {
@@ -41,11 +69,133 @@ function parseBn(s: string): bigint {
   if (t === "") return 0n;
   if (t.startsWith("0x")) return BigInt(t);
   if (t.includes(".")) {
-    // default: treat as ether unit for convenience
     return ethers.parseEther(t);
   }
   return BigInt(t);
 }
+
+function parseUnitsSafe(s: string, decimals: number): bigint {
+  const t = s.trim();
+  if (t === "") return 0n;
+  if (t.startsWith("0x")) return BigInt(t);
+  // Treat user-entered decimals as human units (e.g. "11000" DAI => 11000e18).
+  return ethers.parseUnits(t, decimals);
+}
+
+function fmt18(x: bigint, decimals = 18, fracDigits = 6): string {
+  // Avoid Number(...) here: balances on forks can be huge and exceed JS float precision.
+  const s = ethers.formatUnits(x, decimals);
+  if (fracDigits <= 0) return s.split(".")[0] ?? s;
+  const dot = s.indexOf(".");
+  if (dot === -1) return s;
+  const i = s.slice(0, dot);
+  const f = s.slice(dot + 1, dot + 1 + fracDigits);
+  return `${i}.${f}`;
+}
+
+function fmtSignedUnits(x: bigint, decimals = 18, fracDigits = 3): string {
+  const neg = x < 0n;
+  const abs = neg ? -x : x;
+  const out = fmt18(abs, decimals, fracDigits);
+  return neg ? `-${out}` : out;
+}
+
+async function readTokenMeta(token: string, runner: any): Promise<{ symbol: string; decimals: number }> {
+  if (isZeroAddr(token)) return { symbol: "ETH", decimals: 18 };
+  const erc20 = new ethers.Contract(token, ERC20Abi, runner);
+  const [decimals, symbol] = await Promise.all([
+    erc20.decimals().catch(() => 18),
+    erc20.symbol().catch(() => "TOKEN")
+  ]);
+  return { symbol: String(symbol), decimals: Number(decimals) };
+}
+
+function sqrtPriceX96ToPrice18(sqrtPriceX96: bigint): bigint {
+  const Q192 = 2n ** 192n;
+  const num = sqrtPriceX96 * sqrtPriceX96 * 10n ** 18n;
+  return num / Q192;
+}
+
+function bpsDiff(a: bigint, b: bigint): bigint {
+  if (b === 0n) return 0n;
+  return ((a - b) * 10000n) / b;
+}
+
+// ==================== Uniswap v4 Pool State Helpers ====================
+
+// v4-core StateLibrary constants (lib/v4-core/src/libraries/StateLibrary.sol)
+const V4_POOLS_SLOT = ethers.toBeHex(6, 32);
+const V4_LIQUIDITY_OFFSET = 3n;
+
+function v4PoolStateSlot(poolId: string): string {
+  // slot key of Pool.State value: `pools[poolId]`
+  // keccak256(abi.encodePacked(poolId, POOLS_SLOT))
+  return ethers.solidityPackedKeccak256(["bytes32", "bytes32"], [poolId, V4_POOLS_SLOT]);
+}
+
+function addBytes32Slot(slot: string, offset: bigint): string {
+  return ethers.toBeHex(BigInt(slot) + offset, 32);
+}
+
+function int24From(u: bigint): number {
+  // Interpret low 24 bits as signed int24.
+  const x = u & 0xffffffn;
+  const signed = (x & 0x800000n) !== 0n ? x - 0x1000000n : x;
+  return Number(signed);
+}
+
+function decodeV4Slot0Word(word: string): { sqrtPriceX96: bigint; tick: number; protocolFee: number; lpFee: number } {
+  const data = BigInt(word);
+  const sqrtPriceX96 = data & ((1n << 160n) - 1n);
+  const tick = int24From(data >> 160n);
+  const protocolFee = Number((data >> 184n) & 0xffffffn);
+  const lpFee = Number((data >> 208n) & 0xffffffn);
+  return { sqrtPriceX96, tick, protocolFee, lpFee };
+}
+
+async function readV4Slot0(poolManager: ethers.Contract, poolId: string) {
+  const stateSlot = v4PoolStateSlot(poolId);
+  const word = (await poolManager.extsload(stateSlot)) as string;
+  return decodeV4Slot0Word(word);
+}
+
+async function readV4Liquidity(poolManager: ethers.Contract, poolId: string): Promise<bigint> {
+  const stateSlot = v4PoolStateSlot(poolId);
+  const liqSlot = addBytes32Slot(stateSlot, V4_LIQUIDITY_OFFSET);
+  const word = (await poolManager.extsload(liqSlot)) as string;
+  return BigInt(word);
+}
+
+// ==================== Info Tooltip Component ====================
+
+interface InfoTooltipProps {
+  title: string;
+  children: React.ReactNode;
+}
+
+function InfoTooltip({ title, children }: InfoTooltipProps) {
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <div className="tooltipWrap">
+      <button
+        className="infoBtn"
+        onClick={() => setVisible(!visible)}
+        onMouseEnter={() => setVisible(true)}
+        onMouseLeave={() => setVisible(false)}
+        aria-label="More information"
+      >
+        i
+      </button>
+      <div className={`tooltip ${visible ? "visible" : ""}`}>
+        <div className="tooltipTitle">{title}</div>
+        <div className="tooltipText">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== Main App ====================
 
 export function App() {
   const [tab, setTab] = useState<Tab>("swap");
@@ -78,6 +228,18 @@ export function App() {
     return new ethers.Contract(cfg.flashBackrunner, FlashLoanBackrunnerAbi, p);
   }, [wallet, readProvider]);
 
+  const flashBackrunExecutorAgent = useMemo(() => {
+    const p = wallet.status === "connected" ? wallet.signer : readProvider;
+    if (!p || isZeroAddr(cfg.flashBackrunExecutorAgent)) return null;
+    return new ethers.Contract(cfg.flashBackrunExecutorAgent, FlashBackrunExecutorAgentAbi, p);
+  }, [wallet, readProvider]);
+
+  const simpleRouteAgent = useMemo(() => {
+    const p = wallet.status === "connected" ? wallet.signer : readProvider;
+    if (!p || isZeroAddr(cfg.simpleRouteAgent)) return null;
+    return new ethers.Contract(cfg.simpleRouteAgent, SimpleRouteAgentAbi, p);
+  }, [wallet, readProvider]);
+
   const swarmAgentRegistry = useMemo(() => {
     const p = wallet.status === "connected" ? wallet.signer : readProvider;
     if (!p || isZeroAddr(cfg.swarmAgentRegistry)) return null;
@@ -108,18 +270,23 @@ export function App() {
 
   return (
     <div className="wrap">
+      {/* Top Bar */}
       <div className="topbar">
         <div className="brand">
           <h1>Swarm Protocol</h1>
-          <p>MEV protection + redistribution. Intent routing. Backrun automation-ready.</p>
+          <p>MEV protection · Value redistribution · Intent routing</p>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div className="topbarActions">
           {wallet.status === "connected" ? (
             <span className="pill ok">
-              {shortAddr(wallet.address)} · chain {wallet.chainId}
+              <span className="statusDot active" />
+              {shortAddr(wallet.address)} · Chain {wallet.chainId}
             </span>
           ) : (
-            <span className="pill bad">wallet disconnected</span>
+            <span className="pill bad">
+              <span className="statusDot inactive" />
+              Disconnected
+            </span>
           )}
           <button className="btn btnPrimary" onClick={onConnect}>
             {wallet.status === "connected" ? "Reconnect" : "Connect Wallet"}
@@ -127,44 +294,58 @@ export function App() {
         </div>
       </div>
 
+      {/* Tab Navigation */}
       <div className="tabs" role="tablist" aria-label="Swarm tabs">
         <button className="tab" aria-selected={tab === "swap"} onClick={() => setTab("swap")}>
-          Quick Intent
+          🔄 Quick Intent
         </button>
         <button className="tab" aria-selected={tab === "intent"} onClick={() => setTab("intent")}>
-          Intent Desk
+          📋 Intent Desk
         </button>
         <button className="tab" aria-selected={tab === "lp"} onClick={() => setTab("lp")}>
-          LP Donations
+          💰 LP Donations
         </button>
         <button className="tab" aria-selected={tab === "backrun"} onClick={() => setTab("backrun")}>
-          Backrun
+          ⚡ Backrun
         </button>
         <button className="tab" aria-selected={tab === "admin"} onClick={() => setTab("admin")}>
-          Admin
+          ⚙️ Admin
         </button>
       </div>
 
-      {toast ? <div className={`toast ${toast.kind}`}>{toast.msg}</div> : null}
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`toast ${toast.kind}`}>
+          {toast.kind === "ok" ? "✓ " : "✗ "}
+          {toast.msg}
+        </div>
+      )}
 
+      {/* Protocol Dashboard */}
       <ProtocolDashboard
         wallet={wallet}
         coordinator={coordinator}
         agentExecutor={agentExecutor}
+        simpleRouteAgent={simpleRouteAgent}
         swarmAgentRegistry={swarmAgentRegistry}
         oracleRegistry={oracleRegistry}
         poolManager={poolManager}
         onToast={setToast}
       />
 
+      {/* Tab Content */}
       {tab === "swap" ? (
         <QuickIntentPanel coordinator={coordinator} poolManager={poolManager} onToast={setToast} />
       ) : tab === "intent" ? (
-        <IntentDeskPanel coordinator={coordinator} onToast={setToast} />
+        <IntentDeskPanel coordinator={coordinator} simpleRouteAgent={simpleRouteAgent} onToast={setToast} />
       ) : tab === "lp" ? (
         <LpPanel lpAccumulator={lpAccumulator} onToast={setToast} />
       ) : tab === "backrun" ? (
-        <BackrunPanel flashBackrunner={flashBackrunner} onToast={setToast} />
+        <BackrunPanel
+          flashBackrunner={flashBackrunner}
+          flashBackrunExecutorAgent={flashBackrunExecutorAgent}
+          onToast={setToast}
+        />
       ) : (
         <AdminPanel
           coordinator={coordinator}
@@ -177,30 +358,13 @@ export function App() {
   );
 }
 
-function fmt18(x: bigint, decimals = 18, sig = 6): string {
-  if (decimals === 18) {
-    return Number(ethers.formatUnits(x, 18)).toPrecision(sig);
-  }
-  return Number(ethers.formatUnits(x, decimals)).toPrecision(sig);
-}
-
-function sqrtPriceX96ToPrice18(sqrtPriceX96: bigint): bigint {
-  // price = (sqrtPriceX96^2 / 2^192) in Q0.0; scale to 1e18
-  const Q192 = 2n ** 192n;
-  const num = sqrtPriceX96 * sqrtPriceX96 * 10n ** 18n;
-  return num / Q192;
-}
-
-function bpsDiff(a: bigint, b: bigint): bigint {
-  // (a-b)/b * 10000
-  if (b === 0n) return 0n;
-  return ((a - b) * 10000n) / b;
-}
+// ==================== Protocol Dashboard ====================
 
 function ProtocolDashboard({
   wallet,
   coordinator,
   agentExecutor,
+  simpleRouteAgent,
   swarmAgentRegistry,
   oracleRegistry,
   poolManager,
@@ -209,6 +373,7 @@ function ProtocolDashboard({
   wallet: WalletState;
   coordinator: ethers.Contract | null;
   agentExecutor: ethers.Contract | null;
+  simpleRouteAgent: ethers.Contract | null;
   swarmAgentRegistry: ethers.Contract | null;
   oracleRegistry: ethers.Contract | null;
   poolManager: ethers.Contract | null;
@@ -224,6 +389,7 @@ function ProtocolDashboard({
     liquidity: bigint;
     diffBps: bigint;
     poolId: string;
+    oracleErr?: string;
   }>(null);
 
   const [balances, setBalances] = useState<null | {
@@ -241,6 +407,7 @@ function ProtocolDashboard({
     fee: any;
     backrun: any;
   }>(null);
+  const [routeAgentInfo, setRouteAgentInfo] = useState<any | null>(null);
 
   const poolId = useMemo(() => {
     try {
@@ -265,20 +432,32 @@ function ProtocolDashboard({
       const rp = (coordinator?.runner ?? agentExecutor?.runner ?? oracleRegistry?.runner ?? poolManager?.runner) as any;
       const provider = rp?.provider ?? (rp instanceof ethers.JsonRpcProvider ? rp : null);
 
-      // Market data
-      if (oracleRegistry && poolManager && poolId !== "0x") {
-        const [o, s0, liq] = await Promise.all([
-          oracleRegistry.getLatestPrice(cfg.defaultPool.currencyOut, cfg.defaultPool.currencyIn),
-          poolManager.getSlot0(poolId),
-          poolManager.getLiquidity(poolId)
-        ]);
-        const oraclePrice18 = BigInt(o[0]);
-        const oracleUpdatedAt = BigInt(o[1]);
-        const sqrt = BigInt(s0[0]);
-        const tick = Number(s0[1]);
-        const lpFee = Number(s0[3]);
+      // Market data (never hard-fail the whole dashboard if the oracle call reverts)
+      if (poolManager && poolId !== "0x") {
+        const [s0, liq] = await Promise.all([readV4Slot0(poolManager, poolId), readV4Liquidity(poolManager, poolId)]);
+        const sqrt = BigInt(s0.sqrtPriceX96);
+        const tick = Number(s0.tick);
+        const lpFee = Number(s0.lpFee);
         const poolPrice18 = sqrtPriceX96ToPrice18(sqrt);
-        const diffBps = bpsDiff(poolPrice18, oraclePrice18);
+
+        let oraclePrice18 = 0n;
+        let oracleUpdatedAt = 0n;
+        let oracleErr: string | undefined;
+
+        if (oracleRegistry) {
+          try {
+            const o = await oracleRegistry.getLatestPrice(cfg.defaultPool.currencyOut, cfg.defaultPool.currencyIn);
+            oraclePrice18 = BigInt(o[0]);
+            oracleUpdatedAt = BigInt(o[1]);
+          } catch (e: any) {
+            oracleErr = fmtContractError(e, oracleRegistry);
+          }
+        } else {
+          oracleErr = "oracle registry not configured";
+        }
+
+        const diffBps = oraclePrice18 > 0n ? bpsDiff(poolPrice18, oraclePrice18) : 0n;
+
         setMarket({
           oraclePrice18,
           oracleUpdatedAt,
@@ -287,7 +466,8 @@ function ProtocolDashboard({
           lpFee,
           liquidity: BigInt(liq),
           diffBps,
-          poolId
+          poolId,
+          oracleErr
         });
       }
 
@@ -318,7 +498,11 @@ function ProtocolDashboard({
       // Hook agent status
       if (agentExecutor) {
         const runner = agentExecutor.runner as any;
-        const [arbAddr, feeAddr, backAddr] = await Promise.all([agentExecutor.agents(0), agentExecutor.agents(1), agentExecutor.agents(2)]);
+        const [arbAddr, feeAddr, backAddr] = await Promise.all([
+          agentExecutor.agents(0),
+          agentExecutor.agents(1),
+          agentExecutor.agents(2)
+        ]);
 
         const loadOne = async (t: "ARB" | "FEE" | "BACKRUN", a: string) => {
           const base: any = { type: t, addr: String(a) };
@@ -360,126 +544,238 @@ function ProtocolDashboard({
         ]);
         setHookAgents({ arb, fee, backrun });
       }
+
+      // Route agent (ERC-8004) status
+      const routeAddr = String(cfg.simpleRouteAgent);
+      const routeBase: any = { addr: routeAddr, configured: !isZeroAddr(routeAddr) };
+      if (!isZeroAddr(routeAddr)) {
+        const routeRunner = (simpleRouteAgent?.runner ??
+          coordinator?.runner ??
+          swarmAgentRegistry?.runner ??
+          agentExecutor?.runner) as any;
+        const route =
+          simpleRouteAgent ??
+          (routeRunner ? new ethers.Contract(routeAddr, SimpleRouteAgentAbi, routeRunner) : null);
+
+        if (route) {
+          try {
+            const [defaultCandidateId, defaultScore, erc8004Id, rep, coordMeta] = await Promise.all([
+              route.defaultCandidateId().catch(() => 0n),
+              route.defaultScore().catch(() => 0n),
+              swarmAgentRegistry?.agentIdentities(routeAddr).catch(() => 0n) ?? Promise.resolve(0n),
+              swarmAgentRegistry?.getAgentReputation(routeAddr).catch(() => null) ?? Promise.resolve(null),
+              coordinator?.agents(routeAddr).catch(() => null) ?? Promise.resolve(null)
+            ]);
+
+            routeBase.defaultCandidateId = String(defaultCandidateId);
+            routeBase.defaultScore = String(defaultScore);
+            routeBase.erc8004Id = String(erc8004Id);
+            if (rep) {
+              routeBase.repCount = String(rep[0]);
+              routeBase.repWad = String(rep[1]);
+              routeBase.repTier = String(rep[2]);
+            }
+            if (coordMeta) {
+              routeBase.coordinatorAgentId = String(coordMeta[0]);
+              routeBase.coordinatorActive = Boolean(coordMeta[1]);
+            }
+          } catch {
+            // ignore route metadata failures
+          }
+        }
+      }
+      setRouteAgentInfo(routeBase);
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({
+        kind: "bad",
+        msg: fmtContractError(e, coordinator ?? agentExecutor ?? oracleRegistry ?? poolManager ?? swarmAgentRegistry)
+      });
     } finally {
       setBusy(false);
     }
   }
 
-  const spotOut = useMemo(() => {
-    if (!market) return null;
-    // default UI intent is currencyIn (DAI) -> currencyOut (WETH). oracle/pool prices are DAI per WETH.
-    // So: outWETH ~= inDAI / price(DAI per WETH).
-    if (!balances) return null;
-    return {
-      // just a helper, not a real quote
-      per1: (10n ** 18n * 10n ** 18n) / market.poolPrice18 // WETH per 1 DAI (1e18 scaled)
-    };
-  }, [market, balances]);
-
   return (
     <div className="dash">
       <div className="dashHeader">
         <div>
-          <div className="dashTitle">Dashboard</div>
+          <div className="dashTitleWrap">
+            <div className="dashTitle">📊 Protocol Dashboard</div>
+            <InfoTooltip title="Protocol Dashboard">
+              Real-time overview of the Swarm protocol status including market prices, your wallet balances, and the
+              current state of on-chain hook agents that process every swap.
+            </InfoTooltip>
+          </div>
           <div className="dashSub mono">
-            poolId {market?.poolId ? shortAddr(market.poolId) : "—"} · oracle {shortAddr(cfg.oracleRegistry)} · poolManager{" "}
-            {shortAddr(cfg.poolManager)}
+            Pool {market?.poolId ? shortAddr(market.poolId) : "—"} · Oracle {shortAddr(cfg.oracleRegistry)} ·
+            PoolManager {shortAddr(cfg.poolManager)}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button className="btn btnPrimary" disabled={busy} onClick={loadAll}>
-            {busy ? "Loading…" : "Refresh Dashboard"}
-          </button>
-        </div>
+        <button className="btn btnPrimary" disabled={busy} onClick={loadAll}>
+          {busy ? "Loading…" : "Refresh Dashboard"}
+        </button>
       </div>
 
       <div className="dashGrid">
+        {/* Market Card */}
         <div className="dashCard">
-          <div className="dashCardTitle mono">Market</div>
+          <div className="dashCardHeader">
+            <div className="dashCardTitle">
+              📈 Market
+              <InfoTooltip title="Market Data">
+                Shows the current oracle price (from Chainlink) vs the pool's spot price. The difference in bps
+                indicates potential arbitrage opportunity. Hook agents use this data to protect your swaps.
+              </InfoTooltip>
+            </div>
+          </div>
           {!market ? (
-            <div className="muted">Set `VITE_ORACLE_REGISTRY` + `VITE_POOL_MANAGER` and refresh.</div>
+            <p className="muted">Click Refresh to load market data</p>
           ) : (
-            <div className="kvs" style={{ marginTop: 0 }}>
+            <div className="kvs">
               <div className="kv">
                 <b>Oracle Price</b>
-                <span className="mono">{fmt18(market.oraclePrice18)} DAI/WETH</span>
+                <span>{market.oraclePrice18 > 0n ? `${fmt18(market.oraclePrice18)} DAI/WETH` : "—"}</span>
               </div>
               <div className="kv">
                 <b>Pool Spot Price</b>
-                <span className="mono">{fmt18(market.poolPrice18)} DAI/WETH</span>
+                <span>{fmt18(market.poolPrice18)} DAI/WETH</span>
               </div>
               <div className="kv">
-                <b>Diff</b>
-                <span className="mono">{String(market.diffBps)} bps</span>
-              </div>
-              <div className="kv">
-                <b>Tick</b>
-                <span className="mono">{String(market.tick)}</span>
-              </div>
-              <div className="kv">
-                <b>LP Fee (slot0)</b>
-                <span className="mono">{String(market.lpFee)}</span>
+                <b>Price Diff</b>
+                <span>{market.oraclePrice18 > 0n ? `${String(market.diffBps)} bps` : "—"}</span>
               </div>
               <div className="kv">
                 <b>Liquidity</b>
-                <span className="mono">{String(market.liquidity)}</span>
+                <span>{String(market.liquidity)}</span>
               </div>
-              {spotOut ? (
+              {market.oracleErr ? (
                 <div className="kv">
-                  <b>Spot (WETH / 1 DAI)</b>
-                  <span className="mono">{fmt18(spotOut.per1)} WETH</span>
+                  <b>Oracle Status</b>
+                  <span className="mono">{market.oracleErr}</span>
                 </div>
               ) : null}
-              <div className="muted" style={{ marginTop: 8 }}>
-                Spot numbers are informational only (no fees, no slippage, no hook effects).
-              </div>
             </div>
           )}
         </div>
 
+        {/* Wallet Card */}
         <div className="dashCard">
-          <div className="dashCardTitle mono">Wallet</div>
+          <div className="dashCardHeader">
+            <div className="dashCardTitle">
+              👛 Wallet
+              <InfoTooltip title="Your Wallet">
+                Your current token balances. You'll need tokens to create intents and execute swaps. Make sure you have
+                enough of the input token and ETH for gas.
+              </InfoTooltip>
+            </div>
+          </div>
           {wallet.status !== "connected" ? (
-            <div className="muted">Connect wallet to see balances.</div>
+            <p className="muted">Connect wallet to see balances</p>
           ) : !balances ? (
-            <div className="muted">Refresh dashboard to load balances.</div>
+            <p className="muted">Click Refresh to load balances</p>
           ) : (
-            <div className="kvs" style={{ marginTop: 0 }}>
+            <div className="kvs">
               <div className="kv">
                 <b>ETH</b>
-                <span className="mono">{fmt18(balances.eth)} ETH</span>
+                <span>{fmt18(balances.eth)} ETH</span>
               </div>
               <div className="kv">
                 <b>{balances.inSym}</b>
-                <span className="mono">{fmt18(balances.inBal, balances.inDec)} {balances.inSym}</span>
+                <span>
+                  {fmt18(balances.inBal, balances.inDec)} {balances.inSym}
+                </span>
               </div>
               <div className="kv">
                 <b>{balances.outSym}</b>
-                <span className="mono">{fmt18(balances.outBal, balances.outDec)} {balances.outSym}</span>
+                <span>
+                  {fmt18(balances.outBal, balances.outDec)} {balances.outSym}
+                </span>
               </div>
             </div>
           )}
         </div>
 
+        {/* Hook Agents Card */}
         <div className="dashCard">
-          <div className="dashCardTitle mono">Hook Agents</div>
+          <div className="dashCardHeader">
+            <div className="dashCardTitle">
+              🤖 Hook Agents
+              <InfoTooltip title="On-Chain Hook Agents">
+                These AI agents run on every swap through the hooked pool:
+                <br />• <b>ARB</b>: Captures pre-swap arbitrage
+                <br />• <b>FEE</b>: Sets dynamic fees
+                <br />• <b>BACKRUN</b>: Detects post-swap opportunities
+              </InfoTooltip>
+            </div>
+          </div>
           {!hookAgents ? (
-            <div className="muted">Refresh dashboard to load hook agent status.</div>
+            <p className="muted">Click Refresh to load agent status</p>
           ) : (
-            <div className="kvs" style={{ marginTop: 0 }}>
+            <div className="kvs">
               {[hookAgents.arb, hookAgents.fee, hookAgents.backrun].map((a: any) => (
                 <div className="kv" key={a.type}>
                   <b>{a.type}</b>
-                  <span className="mono">
-                    {shortAddr(a.addr)} · id {a.agentId ?? "—"} · conf {a.confidence ?? "—"} · ok/exec {a.ok ?? "—"}/{a.exec ?? "—"} · repTier{" "}
-                    {a.repTier ?? "—"} · repCount {a.repCount ?? "—"}
+                  <span>
+                    {shortAddr(a.addr)} · Rep:{" "}
+                    {a.repWad !== undefined
+                      ? `${fmtSignedUnits(BigInt(a.repWad), 18, 3)} (${a.repCount ?? "0"} fb)`
+                      : "—"}
                   </span>
                 </div>
               ))}
-              <div className="muted" style={{ marginTop: 8 }}>
-                `id` is the agent's ERC-8004 identity ID stored in the agent contract (0 means "not linked").
+            </div>
+          )}
+        </div>
+
+        {/* Route Agent Card */}
+        <div className="dashCard">
+          <div className="dashCardHeader">
+            <div className="dashCardTitle">
+              🧭 Route Agent (ERC-8004)
+              <InfoTooltip title="Coordinator Route Agent">
+                This is the on-chain `SimpleRouteAgent` used for auto proposal submission. Its ERC-8004 identity and
+                reputation are shown here for visibility.
+              </InfoTooltip>
+            </div>
+          </div>
+          {!routeAgentInfo ? (
+            <p className="muted">Click Refresh to load route agent status</p>
+          ) : !routeAgentInfo.configured ? (
+            <p className="muted">Not configured (set `VITE_SIMPLE_ROUTE_AGENT`)</p>
+          ) : (
+            <div className="kvs">
+              <div className="kv">
+                <b>Address</b>
+                <span>{shortAddr(routeAgentInfo.addr)}</span>
+              </div>
+              <div className="kv">
+                <b>Coordinator</b>
+                <span>
+                  {routeAgentInfo.coordinatorAgentId ?? "—"} ·{" "}
+                  {routeAgentInfo.coordinatorActive === undefined
+                    ? "—"
+                    : routeAgentInfo.coordinatorActive
+                      ? "active"
+                      : "inactive"}
+                </span>
+              </div>
+              <div className="kv">
+                <b>ERC-8004 ID</b>
+                <span>{routeAgentInfo.erc8004Id ?? "—"}</span>
+              </div>
+              <div className="kv">
+                <b>Rep</b>
+                <span>
+                  {routeAgentInfo.repWad !== undefined
+                    ? `${fmtSignedUnits(BigInt(routeAgentInfo.repWad), 18, 3)} (${routeAgentInfo.repCount ?? "0"} fb)`
+                    : "—"}
+                </span>
+              </div>
+              <div className="kv">
+                <b>Defaults</b>
+                <span>
+                  candidate={routeAgentInfo.defaultCandidateId ?? "—"} · score={routeAgentInfo.defaultScore ?? "—"}
+                </span>
               </div>
             </div>
           )}
@@ -488,6 +784,8 @@ function ProtocolDashboard({
     </div>
   );
 }
+
+// ==================== Quick Intent Panel ====================
 
 function QuickIntentPanel({
   coordinator,
@@ -515,9 +813,7 @@ function QuickIntentPanel({
   const [tokenOutMeta, setTokenOutMeta] = useState<{ symbol: string; decimals: number } | null>(null);
   const [bal, setBal] = useState<bigint | null>(null);
   const [allow, setAllow] = useState<bigint | null>(null);
-  const [preview, setPreview] = useState<null | { poolId: string; price18: bigint; estOut: bigint; note: string }>(
-    null
-  );
+  const [preview, setPreview] = useState<null | { poolId: string; price18: bigint; estOut: bigint; note: string }>(null);
 
   const candidateBytes = useMemo(() => {
     const path: PathKey[] = [
@@ -561,7 +857,7 @@ function QuickIntentPanel({
       ]);
       setTokenOutMeta({ symbol: String(outSymbol), decimals: Number(outDecimals) });
     } catch {
-      // Ignore; token might be native or non-standard.
+      // Ignore
     }
   }
 
@@ -577,14 +873,14 @@ function QuickIntentPanel({
       onToast({ kind: "ok", msg: `Approved. tx=${receipt.hash}` });
       await refreshAllowanceAndBalance();
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, coordinator) });
     } finally {
       setBusy(false);
     }
   }
 
   async function previewSpot() {
-    if (!poolManager) return onToast({ kind: "bad", msg: "PoolManager not configured (set VITE_POOL_MANAGER)." });
+    if (!poolManager) return onToast({ kind: "bad", msg: "PoolManager not configured." });
     onToast(null);
     setBusy(true);
     try {
@@ -596,41 +892,41 @@ function QuickIntentPanel({
         tickSpacing: Number(tickSpacing),
         hooks
       });
-      const s0 = await poolManager.getSlot0(pid);
-      const sqrt = BigInt(s0[0]);
-      const price18 = sqrtPriceX96ToPrice18(sqrt); // currency1 per currency0
+      const s0 = await readV4Slot0(poolManager, pid);
+      const sqrt = BigInt(s0.sqrtPriceX96);
+      const price18 = sqrtPriceX96ToPrice18(sqrt);
 
-      const amtIn = parseBn(amountIn);
+      const amtIn = parseUnitsSafe(amountIn, tokenMeta?.decimals ?? 18);
       let estOut = 0n;
-      let note = "spot estimate (no slippage/fees)";
+      let note = "Spot estimate (no slippage/fees)";
       if (currencyIn.toLowerCase() === currency0.toLowerCase() && currencyOut.toLowerCase() === currency1.toLowerCase()) {
-        // in = currency0, out = currency1: out ~= in * price
         estOut = (amtIn * price18) / 10n ** 18n;
       } else if (currencyIn.toLowerCase() === currency1.toLowerCase() && currencyOut.toLowerCase() === currency0.toLowerCase()) {
-        // in = currency1, out = currency0: out ~= in / price
         if (price18 > 0n) estOut = (amtIn * 10n ** 18n) / price18;
       } else {
-        note = "poolKey mismatch (check tokens)";
+        note = "Pool key mismatch (check tokens)";
       }
 
       setPreview({ poolId: pid, price18, estOut, note });
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, poolManager) });
     } finally {
       setBusy(false);
     }
   }
 
   async function create() {
-    if (!coordinator) return onToast({ kind: "bad", msg: "Coordinator not configured (set VITE_COORDINATOR)." });
+    if (!coordinator) return onToast({ kind: "bad", msg: "Coordinator not configured." });
     setBusy(true);
     onToast(null);
     try {
+      const inDec = tokenMeta?.decimals ?? 18;
+      const outDec = tokenOutMeta?.decimals ?? 18;
       const params = {
         currencyIn,
         currencyOut,
-        amountIn: parseBn(amountIn),
-        amountOutMin: parseBn(amountOutMin),
+        amountIn: parseUnitsSafe(amountIn, inDec),
+        amountOutMin: parseUnitsSafe(amountOutMin, outDec),
         deadline: BigInt(deadlineSec || "0"),
         mevFeeBps: Number(mevFeeBps),
         treasuryBps: Number(treasuryBps),
@@ -652,10 +948,10 @@ function QuickIntentPanel({
 
       const intentId = ev ? String(ev.args.intentId) : "(unknown)";
       setLastIntentId(intentId);
-      onToast({ kind: "ok", msg: `Intent created. intentId=${intentId} tx=${receipt.hash}` });
+      onToast({ kind: "ok", msg: `Intent created! ID: ${intentId}` });
       await refreshAllowanceAndBalance();
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, coordinator) });
     } finally {
       setBusy(false);
     }
@@ -663,169 +959,193 @@ function QuickIntentPanel({
 
   return (
     <div className="row">
+      {/* Create Intent Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>Create MEV-Protected Intent (1-hop)</h2>
-          <span className="pill">coordinator {shortAddr(cfg.coordinator)}</span>
+          <div className="cardTitleWrap">
+            <h2>Create MEV-Protected Intent</h2>
+            <InfoTooltip title="What is an Intent?">
+              An intent is an MEV-protected swap request. Instead of swapping directly, you declare your intention to swap.
+              Route agents then compete to find the best execution path, and the swap is executed with MEV protection
+              from the Swarm hook. This protects you from sandwich attacks and front-running.
+            </InfoTooltip>
+          </div>
+          <span className="pill info">{shortAddr(cfg.coordinator)}</span>
         </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+
+        {/* Quick Actions */}
+        <div className="flexRow mb-4">
           <button className="btn" disabled={busy} onClick={refreshAllowanceAndBalance}>
-            Refresh Balance/Allowance
+            Refresh Balance
           </button>
           <button className="btn" disabled={busy} onClick={previewSpot}>
-            Spot Preview
+            Preview Spot
           </button>
           <button className="btn btnPrimary" disabled={busy} onClick={approveMax}>
-            Approve In Token
+            Approve Token
           </button>
-          {tokenMeta ? <span className="pill ok">{tokenMeta.symbol}</span> : <span className="pill">token?</span>}
+          {tokenMeta && <span className="pill ok">{tokenMeta.symbol}</span>}
         </div>
-        <div className="kvs" style={{ marginTop: 0 }}>
+
+        {/* Balance/Allowance Display */}
+        <div className="kvs mb-4">
           <div className="kv">
-            <b>Balance</b>
-            <span className="mono">{bal === null ? "—" : String(bal)}</span>
+            <b>Your Balance</b>
+            <span>{bal === null ? "—" : fmt18(bal, tokenMeta?.decimals ?? 18)} {tokenMeta?.symbol ?? ""}</span>
           </div>
           <div className="kv">
-            <b>Allowance → Coordinator</b>
-            <span className="mono">{allow === null ? "—" : String(allow)}</span>
+            <b>Allowance</b>
+            <span>{allow === null ? "—" : fmt18(allow, tokenMeta?.decimals ?? 18)}</span>
           </div>
         </div>
+
+        {/* Form Fields */}
         <div className="grid2">
           <div className="field">
-            <label>Currency In (token address)</label>
+            <label>Token In (address)</label>
             <input value={currencyIn} onChange={(e) => setCurrencyIn(e.target.value)} />
           </div>
           <div className="field">
-            <label>Currency Out (token address)</label>
+            <label>Token Out (address)</label>
             <input value={currencyOut} onChange={(e) => setCurrencyOut(e.target.value)} />
           </div>
-
           <div className="field">
-            <label>Amount In (ether units if decimal)</label>
-            <input value={amountIn} onChange={(e) => setAmountIn(e.target.value)} />
+            <label>Amount In</label>
+            <input value={amountIn} onChange={(e) => setAmountIn(e.target.value)} placeholder="0.01" />
           </div>
           <div className="field">
-            <label>Min Out (raw or ether units)</label>
-            <input value={amountOutMin} onChange={(e) => setAmountOutMin(e.target.value)} />
+            <label>Min Amount Out</label>
+            <input value={amountOutMin} onChange={(e) => setAmountOutMin(e.target.value)} placeholder="0" />
           </div>
-
           <div className="field">
             <label>MEV Fee (bps)</label>
             <input value={mevFeeBps} onChange={(e) => setMevFeeBps(e.target.value)} />
           </div>
           <div className="field">
-            <label>Treasury Share (bps of MEV fee)</label>
-            <input value={treasuryBps} onChange={(e) => setTreasuryBps(e.target.value)} />
-          </div>
-
-          <div className="field">
-            <label>LP Share (bps of MEV fee)</label>
+            <label>LP Share (bps)</label>
             <input value={lpShareBps} onChange={(e) => setLpShareBps(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Deadline (unix seconds, 0 = none)</label>
-            <input value={deadlineSec} onChange={(e) => setDeadlineSec(e.target.value)} />
-          </div>
-
-          <div className="field">
-            <label>Pool Fee (uint24)</label>
-            <input value={fee} onChange={(e) => setFee(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Tick Spacing (int24)</label>
-            <input value={tickSpacing} onChange={(e) => setTickSpacing(e.target.value)} />
-          </div>
-
-          <div className="field" style={{ gridColumn: "1 / -1" }}>
-            <label>Hooks (SwarmHook address)</label>
-            <input value={hooks} onChange={(e) => setHooks(e.target.value)} />
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+        <div className="mt-4">
           <button className="btn btnPrimary" disabled={busy} onClick={create}>
             {busy ? "Creating…" : "Create Intent"}
           </button>
-          {lastIntentId ? <span className="pill ok">last intentId {lastIntentId}</span> : null}
+          {lastIntentId && <span className="pill ok mt-3" style={{ marginLeft: 12 }}>Intent #{lastIntentId}</span>}
         </div>
 
-        {preview ? (
-          <div className="toast" style={{ marginTop: 12 }}>
-            <div style={{ color: "rgba(255,255,255,0.78)", marginBottom: 6 }}>Spot Preview</div>
-            <div className="kvs" style={{ marginTop: 0 }}>
+        {/* Preview Box */}
+        {preview && (
+          <div className="previewBox">
+            <div className="previewTitle">Spot Preview</div>
+            <div className="kvs">
               <div className="kv">
-                <b>poolId</b>
-                <span className="mono">{preview.poolId}</span>
+                <b>Pool ID</b>
+                <span>{shortAddr(preview.poolId)}</span>
               </div>
               <div className="kv">
-                <b>spot price (currency1/currency0)</b>
-                <span className="mono">{fmt18(preview.price18)}</span>
-              </div>
-              <div className="kv">
-                <b>estimated out</b>
-                <span className="mono">
+                <b>Estimated Out</b>
+                <span>
                   {tokenOutMeta ? `${fmt18(preview.estOut, tokenOutMeta.decimals)} ${tokenOutMeta.symbol}` : String(preview.estOut)}
                 </span>
               </div>
             </div>
-            <div className="muted" style={{ marginTop: 8 }}>
-              {preview.note}
-            </div>
+            <p className="muted mt-3">{preview.note}</p>
           </div>
-        ) : null}
-
-        <div className="toast" style={{ marginTop: 12 }}>
-          <div style={{ color: "rgba(255,255,255,0.78)", marginBottom: 6 }}>Candidate path bytes (auto-built):</div>
-          <div className="mono" style={{ wordBreak: "break-all", color: "rgba(255,255,255,0.9)" }}>
-            {candidateBytes}
-          </div>
-        </div>
+        )}
       </div>
 
+      {/* How It Works Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>How It Completes</h2>
-          <span className="pill">agent-driven</span>
+          <div className="cardTitleWrap">
+            <h2>How It Works</h2>
+            <InfoTooltip title="Intent Flow">
+              The intent system separates order submission from execution, allowing for MEV protection and optimal
+              routing through the Swarm hook.
+            </InfoTooltip>
+          </div>
+          <span className="pill">Agent-Driven</span>
         </div>
-        <p className="muted">
-          An intent is a MEV-protected swap request. Route agents submit proposals. When proposals exist, the requester
-          executes the intent and receives the swap output. SwarmHook applies MEV fee accounting on-chain.
-        </p>
-        <div className="kvs">
-          <div className="kv">
-            <b>Step 1</b>
-            <span>Create intent</span>
+
+        <div className="stepsList">
+          <div className="step">
+            <div className="stepNum">1</div>
+            <div className="stepContent">
+              <div className="stepTitle">Create Intent</div>
+              <div className="stepDesc">Submit your swap intent with desired parameters. No tokens are swapped yet.</div>
+            </div>
           </div>
-          <div className="kv">
-            <b>Step 2</b>
-            <span>Agents propose best candidate</span>
+          <div className="step">
+            <div className="stepNum">2</div>
+            <div className="stepContent">
+              <div className="stepTitle">Agents Propose Routes</div>
+              <div className="stepDesc">Route agents analyze your intent and propose the best execution paths.</div>
+            </div>
           </div>
-          <div className="kv">
-            <b>Step 3</b>
-            <span>You execute the intent (you receive output)</span>
+          <div className="step">
+            <div className="stepNum">3</div>
+            <div className="stepContent">
+              <div className="stepTitle">Execute Intent</div>
+              <div className="stepDesc">You execute the winning proposal. The swap goes through the MEV-protected hook.</div>
+            </div>
           </div>
         </div>
-        <p className="muted" style={{ marginTop: 12 }}>
-          If your team runs the route agent, proposals can be submitted automatically (server-side agent bot).
+
+        <p className="muted mt-4">
+          Route proposals can be triggered from the frontend through `SimpleRouteAgent`, so no `cast` command is needed
+          for the demo flow.
         </p>
       </div>
     </div>
   );
 }
 
+// ==================== Intent Desk Panel ====================
+
 function IntentDeskPanel({
   coordinator,
+  simpleRouteAgent,
   onToast
 }: {
   coordinator: ethers.Contract | null;
+  simpleRouteAgent: ethers.Contract | null;
   onToast: (t: { kind: "ok" | "bad"; msg: string } | null) => void;
 }) {
   const [intentId, setIntentId] = useState("");
-  const [candidateId, setCandidateId] = useState("0");
-  const [score, setScore] = useState("0");
-  const [data, setData] = useState("0x");
   const [info, setInfo] = useState<any | null>(null);
+  const [payer, setPayer] = useState<string>("");
+  const [inMeta, setInMeta] = useState<{ symbol: string; decimals: number } | null>(null);
+  const [inBal, setInBal] = useState<bigint | null>(null);
+  const [inAllow, setInAllow] = useState<bigint | null>(null);
   const [busy, setBusy] = useState(false);
+
+  async function refreshPayerAndAllowance(intent: any) {
+    try {
+      if (!coordinator) return;
+      const runner: any = coordinator.runner;
+      const addr = await runner?.getAddress?.();
+      if (!addr) return;
+      setPayer(String(addr));
+
+      const tokenIn = String(intent.currencyIn);
+      if (isZeroAddr(tokenIn)) return;
+
+      const erc20 = new ethers.Contract(tokenIn, ERC20Abi, runner);
+      const [decimals, symbol, bal, allow] = await Promise.all([
+        erc20.decimals().catch(() => 18),
+        erc20.symbol().catch(() => "TOKEN_IN"),
+        erc20.balanceOf(addr),
+        erc20.allowance(addr, await coordinator.getAddress())
+      ]);
+
+      setInMeta({ symbol: String(symbol), decimals: Number(decimals) });
+      setInBal(BigInt(bal));
+      setInAllow(BigInt(allow));
+    } catch {
+      // ignore (read-only wallets, weird tokens, etc.)
+    }
+  }
 
   async function load() {
     if (!coordinator) return onToast({ kind: "bad", msg: "Coordinator not configured." });
@@ -842,40 +1162,58 @@ function IntentDeskPanel({
         props.push({ agent: a, ...p });
       }
       setInfo({ intent, count: Number(count), proposalAgents: agents, proposals: props });
+      await refreshPayerAndAllowance(intent);
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, coordinator) });
     } finally {
       setBusy(false);
     }
   }
 
-  async function propose() {
-    if (!coordinator) return onToast({ kind: "bad", msg: "Coordinator not configured." });
-    onToast(null);
-    setBusy(true);
-    try {
-      const tx = await coordinator.submitProposal(BigInt(intentId), BigInt(candidateId), BigInt(score), data);
-      const receipt = await tx.wait(1);
-      onToast({ kind: "ok", msg: `Proposal submitted. tx=${receipt.hash}` });
-      await load();
-    } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
-    } finally {
-      setBusy(false);
-    }
+  async function ensureAllowanceForIntent(intent: any) {
+    if (!coordinator) return;
+    const tokenIn = String(intent.currencyIn);
+    const amountIn = BigInt(intent.amountIn);
+    if (isZeroAddr(tokenIn)) return;
+
+    const runner: any = coordinator.runner;
+    const addr = await runner?.getAddress?.();
+    if (!addr) return;
+
+    const erc20 = new ethers.Contract(tokenIn, ERC20Abi, runner);
+    const allow: bigint = BigInt(await erc20.allowance(addr, await coordinator.getAddress()));
+    if (allow >= amountIn) return;
+
+    const txa = await erc20.approve(await coordinator.getAddress(), ethers.MaxUint256);
+    await txa.wait(1);
   }
 
-  async function execute() {
+  async function autoProposeAndExecute() {
     if (!coordinator) return onToast({ kind: "bad", msg: "Coordinator not configured." });
+    if (!simpleRouteAgent) return onToast({ kind: "bad", msg: "SimpleRouteAgent not configured." });
     onToast(null);
     setBusy(true);
     try {
-      const tx = await coordinator.executeIntent(BigInt(intentId));
-      const receipt = await tx.wait(1);
-      onToast({ kind: "ok", msg: `Intent executed. tx=${receipt.hash}` });
+      const intent = info?.intent ?? (await coordinator.getIntent(BigInt(intentId)));
+      let proposeHash = "skipped";
+      try {
+        const tx1 = await simpleRouteAgent.propose(BigInt(intentId));
+        const r1 = await tx1.wait(1);
+        proposeHash = shortAddr(r1.hash);
+      } catch {
+        // If already proposed, continue to execute.
+      }
+
+      await ensureAllowanceForIntent(intent);
+      const tx2 = await coordinator.executeIntent(BigInt(intentId));
+      const r2 = await tx2.wait(1);
+      onToast({
+        kind: "ok",
+        msg: `Auto flow complete. propose=${proposeHash} execute=${shortAddr(r2.hash)}`
+      });
       await load();
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, simpleRouteAgent ?? coordinator) });
     } finally {
       setBusy(false);
     }
@@ -883,99 +1221,125 @@ function IntentDeskPanel({
 
   return (
     <div className="row">
+      {/* Intent Management Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>Intent Desk</h2>
-          <span className="pill">load · propose · execute</span>
+          <div className="cardTitleWrap">
+            <h2>Intent Manager</h2>
+            <InfoTooltip title="Intent Management">
+              Load an existing intent and execute one-click router flow using the configured `SimpleRouteAgent`.
+            </InfoTooltip>
+          </div>
+          <span className="pill">Load · Auto Route+Execute</span>
         </div>
-        <div className="grid2">
+
+        <div className="grid2 mb-4">
           <div className="field">
             <label>Intent ID</label>
-            <input value={intentId} onChange={(e) => setIntentId(e.target.value)} placeholder="0" />
+            <input value={intentId} onChange={(e) => setIntentId(e.target.value)} placeholder="Enter intent ID" />
           </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "end" }}>
-            <button className="btn btnPrimary" disabled={busy || intentId.trim() === ""} onClick={load}>
-              {busy ? "Loading…" : "Load"}
+          <div className="flexRow" style={{ alignItems: "flex-end" }}>
+            <button className="btn btnPrimary" disabled={busy || !intentId.trim()} onClick={load}>
+              {busy ? "Loading…" : "Load Intent"}
             </button>
-            <button className="btn" disabled={busy || intentId.trim() === ""} onClick={execute}>
-              Execute (Requester)
+            <button className="btn" disabled={busy || !intentId.trim() || !simpleRouteAgent} onClick={autoProposeAndExecute}>
+              Auto Propose + Execute via Router
             </button>
           </div>
         </div>
 
-        <div style={{ height: 12 }} />
+        <div className="kvs mb-4">
+          <div className="kv">
+            <b>Router Agent</b>
+            <span>{simpleRouteAgent ? shortAddr(cfg.simpleRouteAgent) : "Not configured (set VITE_SIMPLE_ROUTE_AGENT)"}</span>
+          </div>
+        </div>
 
-        <div className="cardHeader">
-          <h2>Submit Proposal (Route Agent)</h2>
-          <span className="pill">requires agent registration</span>
-        </div>
-        <div className="grid2">
-          <div className="field">
-            <label>Candidate ID</label>
-            <input value={candidateId} onChange={(e) => setCandidateId(e.target.value)} />
+        {info?.intent ? (
+          <div className="kvs mb-4">
+            <div className="kv">
+              <b>Payer</b>
+              <span className="mono">{payer ? shortAddr(payer) : "—"}</span>
+            </div>
+            <div className="kv">
+              <b>Input Token</b>
+              <span className="mono">{shortAddr(String(info.intent.currencyIn))}</span>
+            </div>
+            <div className="kv">
+              <b>Amount In</b>
+              <span>{inMeta ? `${fmt18(BigInt(info.intent.amountIn), inMeta.decimals)} ${inMeta.symbol}` : String(info.intent.amountIn)}</span>
+            </div>
+            <div className="kv">
+              <b>Balance</b>
+              <span>{inBal === null ? "—" : `${fmt18(inBal, inMeta?.decimals ?? 18)} ${inMeta?.symbol ?? ""}`}</span>
+            </div>
+            <div className="kv">
+              <b>Allowance</b>
+              <span>{inAllow === null ? "—" : `${fmt18(inAllow, inMeta?.decimals ?? 18)} ${inMeta?.symbol ?? ""}`}</span>
+            </div>
           </div>
-          <div className="field">
-            <label>Score (int256; lower is better)</label>
-            <input value={score} onChange={(e) => setScore(e.target.value)} />
-          </div>
-          <div className="field" style={{ gridColumn: "1 / -1" }}>
-            <label>Data (bytes, optional)</label>
-            <input value={data} onChange={(e) => setData(e.target.value)} />
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-          <button className="btn btnPrimary" disabled={busy || intentId.trim() === ""} onClick={propose}>
-            Submit Proposal
-          </button>
-        </div>
+        ) : null}
+
+        <p className="muted mt-3">
+          This view now uses a single route action button: `Auto Propose + Execute via Router`.
+        </p>
       </div>
 
+      {/* Intent State Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>State</h2>
-          <span className="pill">read-only</span>
+          <div className="cardTitleWrap">
+            <h2>Intent State</h2>
+            <InfoTooltip title="Current Intent State">
+              View the current state of the loaded intent including the requester address, execution status, and all
+              submitted proposals from route agents.
+            </InfoTooltip>
+          </div>
+          <span className="pill">Read-Only</span>
         </div>
+
         {!info ? (
-          <p className="muted">Load an intent to see details.</p>
+          <div className="emptyState">
+            <p>Load an intent to see its details</p>
+          </div>
         ) : (
           <>
-            <div className="kvs">
+            <div className="kvs mb-4">
               <div className="kv">
                 <b>Requester</b>
-                <span className="mono">{shortAddr(info.intent.requester)}</span>
+                <span>{shortAddr(info.intent.requester)}</span>
               </div>
               <div className="kv">
-                <b>Executed</b>
-                <span className="mono">{String(info.intent.executed)}</span>
+                <b>Status</b>
+                <span>
+                  <span className={`statusDot ${info.intent.executed ? "active" : "pending"}`} />
+                  {info.intent.executed ? "Executed" : "Pending"}
+                </span>
               </div>
               <div className="kv">
-                <b>Candidate Count</b>
-                <span className="mono">{String(info.count)}</span>
+                <b>Candidates</b>
+                <span>{info.count}</span>
               </div>
               <div className="kv">
                 <b>Amount In</b>
-                <span className="mono">{String(info.intent.amountIn)}</span>
-              </div>
-              <div className="kv">
-                <b>Min Out</b>
-                <span className="mono">{String(info.intent.amountOutMin)}</span>
+                <span>
+                  {inMeta ? `${fmt18(BigInt(info.intent.amountIn), inMeta.decimals)} ${inMeta.symbol}` : String(info.intent.amountIn)}
+                </span>
               </div>
             </div>
-            <div style={{ height: 12 }} />
-            <div className="cardHeader">
-              <h2>Proposals</h2>
-              <span className="pill">{info.proposals.length}</span>
+
+            <div className="sectionHeader">
+              <h3>Proposals ({info.proposals.length})</h3>
             </div>
+
             {info.proposals.length === 0 ? (
-              <p className="muted">No proposals yet.</p>
+              <p className="muted">No proposals submitted yet</p>
             ) : (
               <div className="kvs">
                 {info.proposals.map((p: any) => (
                   <div className="kv" key={p.agent}>
-                    <b className="mono">{shortAddr(p.agent)}</b>
-                    <span className="mono">
-                      candidate={String(p.candidateId)} score={String(p.score)}
-                    </span>
+                    <b>{shortAddr(p.agent)}</b>
+                    <span>Candidate: {String(p.candidateId)} · Score: {String(p.score)}</span>
                   </div>
                 ))}
               </div>
@@ -987,6 +1351,8 @@ function IntentDeskPanel({
   );
 }
 
+// ==================== LP Panel ====================
+
 function LpPanel({
   lpAccumulator,
   onToast
@@ -994,19 +1360,41 @@ function LpPanel({
   lpAccumulator: ethers.Contract | null;
   onToast: (t: { kind: "ok" | "bad"; msg: string } | null) => void;
 }) {
-  const [poolId, setPoolId] = useState("0x");
+  const [poolId, setPoolId] = useState(() => {
+    try {
+      const { currency0, currency1 } = sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut);
+      return toBytes32PoolIdFromPoolKey({
+        currency0,
+        currency1,
+        fee: Number(cfg.defaultPool.fee),
+        tickSpacing: Number(cfg.defaultPool.tickSpacing),
+        hooks: cfg.defaultPool.hooks
+      });
+    } catch {
+      return "0x";
+    }
+  });
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<any | null>(null);
+  const [token0Meta, setToken0Meta] = useState<{ symbol: string; decimals: number } | null>(null);
+  const [token1Meta, setToken1Meta] = useState<{ symbol: string; decimals: number } | null>(null);
 
   async function load() {
     if (!lpAccumulator) return onToast({ kind: "bad", msg: "LPFeeAccumulator not configured." });
     onToast(null);
     setBusy(true);
     try {
-      const r = await lpAccumulator.canDonate(poolId);
+      const { currency0, currency1 } = sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut);
+      const [r, m0, m1] = await Promise.all([
+        lpAccumulator.canDonate(poolId),
+        readTokenMeta(currency0, lpAccumulator.runner as any),
+        readTokenMeta(currency1, lpAccumulator.runner as any)
+      ]);
       setInfo({ canDonate: r[0], amount0: r[1], amount1: r[2] });
+      setToken0Meta(m0);
+      setToken1Meta(m1);
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, lpAccumulator) });
     } finally {
       setBusy(false);
     }
@@ -1019,10 +1407,10 @@ function LpPanel({
     try {
       const tx = await lpAccumulator.donateToLPs(poolId);
       const receipt = await tx.wait(1);
-      onToast({ kind: "ok", msg: `Donated to LPs. tx=${receipt.hash}` });
+      onToast({ kind: "ok", msg: `Donated to LPs! tx=${shortAddr(receipt.hash)}` });
       await load();
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, lpAccumulator) });
     } finally {
       setBusy(false);
     }
@@ -1030,45 +1418,81 @@ function LpPanel({
 
   return (
     <div className="row">
+      {/* LP Donation Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>LP Donation</h2>
-          <span className="pill">anyone can call donate</span>
+          <div className="cardTitleWrap">
+            <h2>LP Fee Donation</h2>
+            <InfoTooltip title="LP Fee Accumulator">
+              The LPFeeAccumulator collects MEV profits captured by the Swarm hook. When thresholds are met, anyone can
+              call donate to redistribute these profits to liquidity providers. This ensures LPs benefit from MEV
+              protection.
+            </InfoTooltip>
+          </div>
+          <span className="pill ok">Public Function</span>
         </div>
-        <div className="field">
+
+        <div className="field mb-4">
           <label>Pool ID (bytes32)</label>
-          <input value={poolId} onChange={(e) => setPoolId(e.target.value)} placeholder="0x…" />
+          <input value={poolId} onChange={(e) => setPoolId(e.target.value)} placeholder="0x..." />
         </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+
+        <div className="flexRow mb-4">
           <button className="btn btnPrimary" disabled={busy || poolId === "0x"} onClick={load}>
-            Load
+            Check Donation Status
           </button>
           <button className="btn" disabled={busy || poolId === "0x"} onClick={donate}>
-            Donate To LPs
+            Donate to LPs
           </button>
         </div>
-        {info ? (
+
+        {info && (
           <div className="kvs">
             <div className="kv">
+              <b>Pool Key Order</b>
+              <span className="mono">
+                c0={shortAddr(sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut).currency0)} ·
+                c1={shortAddr(sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut).currency1)}
+              </span>
+            </div>
+            <div className="kv">
               <b>Can Donate</b>
-              <span className="mono">{String(info.canDonate)}</span>
+              <span>
+                <span className={`statusDot ${info.canDonate ? "active" : "inactive"}`} />
+                {info.canDonate ? "Yes" : "No"}
+              </span>
             </div>
             <div className="kv">
-              <b>Amount0</b>
-              <span className="mono">{String(info.amount0)}</span>
+              <b>Amount 0 (accumulated)</b>
+              <span>
+                {fmt18(BigInt(info.amount0), token0Meta?.decimals ?? 18)} {token0Meta?.symbol ?? ""}
+                {" · raw "}
+                {String(info.amount0)}
+              </span>
             </div>
             <div className="kv">
-              <b>Amount1</b>
-              <span className="mono">{String(info.amount1)}</span>
+              <b>Amount 1 (accumulated)</b>
+              <span>
+                {fmt18(BigInt(info.amount1), token1Meta?.decimals ?? 18)} {token1Meta?.symbol ?? ""}
+                {" · raw "}
+                {String(info.amount1)}
+              </span>
             </div>
           </div>
-        ) : null}
+        )}
       </div>
 
+      {/* Pool ID Helper Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>PoolId Helper</h2>
-          <span className="pill">compute off-chain</span>
+          <div className="cardTitleWrap">
+            <h2>Pool ID Calculator</h2>
+            <InfoTooltip title="Compute Pool ID">
+              Uniswap v4 pool IDs are computed from the pool key parameters. Use this helper to generate the correct
+              pool ID for any pool configuration.
+            </InfoTooltip>
+          </div>
+          <span className="pill">Utility</span>
         </div>
         <PoolIdHelper onToast={onToast} />
       </div>
@@ -1077,8 +1501,9 @@ function LpPanel({
 }
 
 function PoolIdHelper({ onToast }: { onToast: (t: { kind: "ok" | "bad"; msg: string } | null) => void }) {
-  const [currency0, setCurrency0] = useState(cfg.defaultPool.currencyIn);
-  const [currency1, setCurrency1] = useState(cfg.defaultPool.currencyOut);
+  const sortedDefaults = sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut);
+  const [currency0, setCurrency0] = useState(sortedDefaults.currency0);
+  const [currency1, setCurrency1] = useState(sortedDefaults.currency1);
   const [fee, setFee] = useState(String(cfg.defaultPool.fee || 8388608));
   const [tickSpacing, setTickSpacing] = useState(String(cfg.defaultPool.tickSpacing || 60));
   const [hooks, setHooks] = useState(cfg.defaultPool.hooks);
@@ -1086,15 +1511,21 @@ function PoolIdHelper({ onToast }: { onToast: (t: { kind: "ok" | "bad"; msg: str
 
   function compute() {
     try {
+      // PoolKey requires currency0 < currency1 (Uniswap v4 convention).
+      const sorted = sortCurrencies(currency0, currency1);
+      if (sorted.currency0 !== currency0 || sorted.currency1 !== currency1) {
+        setCurrency0(sorted.currency0);
+        setCurrency1(sorted.currency1);
+      }
       const id = toBytes32PoolIdFromPoolKey({
-        currency0,
-        currency1,
+        currency0: sorted.currency0,
+        currency1: sorted.currency1,
         fee: Number(fee),
         tickSpacing: Number(tickSpacing),
         hooks
       });
       setOut(id);
-      onToast({ kind: "ok", msg: `Computed poolId=${id}` });
+      onToast({ kind: "ok", msg: "Pool ID computed successfully" });
     } catch (e: any) {
       onToast({ kind: "bad", msg: e?.message ?? String(e) });
     }
@@ -1104,61 +1535,206 @@ function PoolIdHelper({ onToast }: { onToast: (t: { kind: "ok" | "bad"; msg: str
     <>
       <div className="grid2">
         <div className="field">
-          <label>currency0</label>
+          <label>Currency 0</label>
           <input value={currency0} onChange={(e) => setCurrency0(e.target.value)} />
         </div>
         <div className="field">
-          <label>currency1</label>
+          <label>Currency 1</label>
           <input value={currency1} onChange={(e) => setCurrency1(e.target.value)} />
         </div>
         <div className="field">
-          <label>fee</label>
+          <label>Fee</label>
           <input value={fee} onChange={(e) => setFee(e.target.value)} />
         </div>
         <div className="field">
-          <label>tickSpacing</label>
+          <label>Tick Spacing</label>
           <input value={tickSpacing} onChange={(e) => setTickSpacing(e.target.value)} />
         </div>
         <div className="field" style={{ gridColumn: "1 / -1" }}>
-          <label>hooks</label>
+          <label>Hooks Address</label>
           <input value={hooks} onChange={(e) => setHooks(e.target.value)} />
         </div>
       </div>
-      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+
+      <div className="mt-4">
         <button className="btn btnPrimary" onClick={compute}>
-          Compute PoolId
+          Compute Pool ID
         </button>
       </div>
-      {out ? (
-        <div className="toast" style={{ marginTop: 12 }}>
-          <div className="mono" style={{ wordBreak: "break-all" }}>
-            {out}
-          </div>
-        </div>
-      ) : null}
+
+      {out && (
+        <div className="codeBlock mt-4">{out}</div>
+      )}
     </>
   );
 }
 
+// ==================== Backrun Panel ====================
+
 function BackrunPanel({
   flashBackrunner,
+  flashBackrunExecutorAgent,
   onToast
 }: {
   flashBackrunner: ethers.Contract | null;
+  flashBackrunExecutorAgent: ethers.Contract | null;
   onToast: (t: { kind: "ok" | "bad"; msg: string } | null) => void;
 }) {
-  const [poolId, setPoolId] = useState("0x");
-  const [amount, setAmount] = useState("0.01");
-  const [minProfit, setMinProfit] = useState("0");
+  type BackrunnerEventInfo = {
+    txHash: string;
+    blockNumber: number;
+    flashLoanAmount: bigint;
+    profit: bigint;
+    lpShare: bigint;
+    keeper: string;
+  };
+
+  type ExecutorEventInfo = {
+    txHash: string;
+    blockNumber: number;
+    caller: string;
+    token: string;
+    amountIn: bigint;
+    bounty: bigint;
+  };
+
+  const [poolId, setPoolId] = useState(() => {
+    try {
+      const { currency0, currency1 } = sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut);
+      return toBytes32PoolIdFromPoolKey({
+        currency0,
+        currency1,
+        fee: Number(cfg.defaultPool.fee),
+        tickSpacing: Number(cfg.defaultPool.tickSpacing),
+        hooks: cfg.defaultPool.hooks
+      });
+    } catch {
+      return "0x";
+    }
+  });
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<any | null>(null);
+  const [executorConfig, setExecutorConfig] = useState<{ maxFlashloanAmount: bigint; minProfit: bigint } | null>(null);
+  const [lastBackrunnerExec, setLastBackrunnerExec] = useState<BackrunnerEventInfo | null>(null);
+  const [lastExecutorExec, setLastExecutorExec] = useState<ExecutorEventInfo | null>(null);
+
+  const normalizedPoolId = poolId.trim();
+  const validPoolId = normalizedPoolId.startsWith("0x") && normalizedPoolId.length === 66;
+
+  function getProvider(contract: ethers.Contract | null): ethers.Provider | null {
+    if (!contract) return null;
+    const runner = contract.runner as any;
+    const provider = runner?.provider ?? runner;
+    return provider && typeof provider.getBlockNumber === "function" ? (provider as ethers.Provider) : null;
+  }
+
+  function parseBackrunnerEventFromReceipt(receipt: ethers.TransactionReceipt): BackrunnerEventInfo | null {
+    if (!flashBackrunner) return null;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = flashBackrunner.interface.parseLog(log as any) as any;
+        if (parsed?.name !== "BackrunExecuted") continue;
+        return {
+          txHash: receipt.hash,
+          blockNumber: receipt.blockNumber,
+          flashLoanAmount: BigInt(parsed.args[1]),
+          profit: BigInt(parsed.args[2]),
+          lpShare: BigInt(parsed.args[3]),
+          keeper: String(parsed.args[4])
+        };
+      } catch {
+        // ignore unrelated logs
+      }
+    }
+    return null;
+  }
+
+  function parseExecutorEventFromReceipt(receipt: ethers.TransactionReceipt): ExecutorEventInfo | null {
+    if (!flashBackrunExecutorAgent) return null;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = flashBackrunExecutorAgent.interface.parseLog(log as any) as any;
+        if (parsed?.name !== "BackrunExecuted") continue;
+        return {
+          txHash: receipt.hash,
+          blockNumber: receipt.blockNumber,
+          caller: String(parsed.args[1]),
+          token: String(parsed.args[2]),
+          amountIn: BigInt(parsed.args[3]),
+          bounty: BigInt(parsed.args[4])
+        };
+      } catch {
+        // ignore unrelated logs
+      }
+    }
+    return null;
+  }
+
+  async function loadRecentExecutionEvents(poolIdValue: string) {
+    const provider = getProvider(flashBackrunner) ?? getProvider(flashBackrunExecutorAgent);
+    if (!provider) return;
+
+    const latestBlock = await provider.getBlockNumber();
+    const fromBlock = Math.max(0, latestBlock - 5000);
+
+    let recentBackrunner: BackrunnerEventInfo | null = null;
+    if (flashBackrunner) {
+      try {
+        const events = await flashBackrunner.queryFilter(
+          flashBackrunner.filters.BackrunExecuted(poolIdValue),
+          fromBlock,
+          latestBlock
+        );
+        const evt = events.length > 0 ? (events[events.length - 1] as any) : null;
+        if (evt?.args) {
+          recentBackrunner = {
+            txHash: String(evt.transactionHash),
+            blockNumber: Number(evt.blockNumber),
+            flashLoanAmount: BigInt(evt.args[1]),
+            profit: BigInt(evt.args[2]),
+            lpShare: BigInt(evt.args[3]),
+            keeper: String(evt.args[4])
+          };
+        }
+      } catch {
+        // keep null
+      }
+    }
+    setLastBackrunnerExec(recentBackrunner);
+
+    let recentExecutor: ExecutorEventInfo | null = null;
+    if (flashBackrunExecutorAgent) {
+      try {
+        const events = await flashBackrunExecutorAgent.queryFilter(
+          flashBackrunExecutorAgent.filters.BackrunExecuted(poolIdValue, null),
+          fromBlock,
+          latestBlock
+        );
+        const evt = events.length > 0 ? (events[events.length - 1] as any) : null;
+        if (evt?.args) {
+          recentExecutor = {
+            txHash: String(evt.transactionHash),
+            blockNumber: Number(evt.blockNumber),
+            caller: String(evt.args[1]),
+            token: String(evt.args[2]),
+            amountIn: BigInt(evt.args[3]),
+            bounty: BigInt(evt.args[4])
+          };
+        }
+      } catch {
+        // keep null
+      }
+    }
+    setLastExecutorExec(recentExecutor);
+  }
 
   async function load() {
     if (!flashBackrunner) return onToast({ kind: "bad", msg: "FlashLoanBackrunner not configured." });
+    if (!validPoolId) return onToast({ kind: "bad", msg: "Enter a valid bytes32 pool ID." });
     onToast(null);
     setBusy(true);
     try {
-      const r = await flashBackrunner.getPendingBackrun(poolId);
+      const r = await flashBackrunner.getPendingBackrun(normalizedPoolId);
       setInfo({
         targetPrice: r[0],
         currentPrice: r[1],
@@ -1168,40 +1744,52 @@ function BackrunPanel({
         blockNumber: r[5],
         executed: r[6]
       });
+      if (flashBackrunExecutorAgent) {
+        try {
+          const [maxFlashloanAmount, cfgMinProfit] = await Promise.all([
+            flashBackrunExecutorAgent.maxFlashloanAmount(),
+            flashBackrunExecutorAgent.minProfit()
+          ]);
+          setExecutorConfig({
+            maxFlashloanAmount: BigInt(maxFlashloanAmount),
+            minProfit: BigInt(cfgMinProfit)
+          });
+        } catch {
+          setExecutorConfig(null);
+        }
+      } else {
+        setExecutorConfig(null);
+      }
+      await loadRecentExecutionEvents(normalizedPoolId);
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, flashBackrunner) });
     } finally {
       setBusy(false);
     }
   }
 
-  async function execFlash() {
-    if (!flashBackrunner) return onToast({ kind: "bad", msg: "FlashLoanBackrunner not configured." });
+  async function execViaExecutorAgent() {
+    if (!flashBackrunExecutorAgent) return onToast({ kind: "bad", msg: "Executor agent not configured." });
+    if (!validPoolId) return onToast({ kind: "bad", msg: "Enter a valid bytes32 pool ID." });
     onToast(null);
     setBusy(true);
     try {
-      const tx = await flashBackrunner.executeBackrunPartial(poolId, parseBn(amount), parseBn(minProfit));
+      const tx = await flashBackrunExecutorAgent.execute(normalizedPoolId);
       const receipt = await tx.wait(1);
-      onToast({ kind: "ok", msg: `Backrun executed (flashloan). tx=${receipt.hash}` });
+      if (!receipt) throw new Error("No transaction receipt returned.");
+      const execEvent = parseExecutorEventFromReceipt(receipt);
+      const backrunEvent = parseBackrunnerEventFromReceipt(receipt);
+      if (execEvent) setLastExecutorExec(execEvent);
+      if (backrunEvent) setLastBackrunnerExec(backrunEvent);
+      onToast({
+        kind: "ok",
+        msg: execEvent
+          ? `Executor backrun tx=${shortAddr(receipt.hash)} bounty=${fmt18(execEvent.bounty)}`
+          : `Executor backrun tx=${shortAddr(receipt.hash)}`
+      });
       await load();
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function execCapital() {
-    if (!flashBackrunner) return onToast({ kind: "bad", msg: "FlashLoanBackrunner not configured." });
-    onToast(null);
-    setBusy(true);
-    try {
-      const tx = await flashBackrunner.executeBackrunWithCapital(poolId, parseBn(amount), parseBn(minProfit));
-      const receipt = await tx.wait(1);
-      onToast({ kind: "ok", msg: `Backrun executed (capital). tx=${receipt.hash}` });
-      await load();
-    } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, flashBackrunExecutorAgent) });
     } finally {
       setBusy(false);
     }
@@ -1209,73 +1797,143 @@ function BackrunPanel({
 
   return (
     <div className="row">
+      {/* Backrun Console Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>Backrun Console</h2>
-          <span className="pill">keeper tooling</span>
+          <div className="cardTitleWrap">
+            <h2>Backrun Console</h2>
+            <InfoTooltip title="Backrun Execution">
+              Hook logic can detect and record backrun opportunities during swaps. Execution is transaction-driven: a
+              manual caller, bot, or the permissionless executor-agent must submit the execution transaction.
+              <br /><br />
+              Profits are split: 80% to LP accumulator, 20% to keeper/executor.
+            </InfoTooltip>
+          </div>
+          <span className="pill warn">Execution Tool</span>
         </div>
-        <p className="muted">
-          In production you run an event-driven keeper. This console is a manual fallback to inspect pending
-          opportunities and execute them.
+
+        <p className="muted mb-4">
+          Opportunity detection is automatic; execution is not autonomous unless an external caller or bot triggers it.
+          Use this panel to execute and inspect on-chain telemetry.
         </p>
-        <div className="field">
-          <label>Pool ID (bytes32)</label>
-          <input value={poolId} onChange={(e) => setPoolId(e.target.value)} placeholder="0x…" />
+
+        <div className="field mb-4">
+          <label>Hook Pool ID (bytes32)</label>
+          <input value={poolId} onChange={(e) => setPoolId(e.target.value)} placeholder="0x... (from deploy output Hook Pool poolId)" />
         </div>
-        <div className="grid2" style={{ marginTop: 10 }}>
-          <div className="field">
-            <label>Amount (ether units if decimal)</label>
-            <input value={amount} onChange={(e) => setAmount(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Min Profit (wei, optional)</label>
-            <input value={minProfit} onChange={(e) => setMinProfit(e.target.value)} />
-          </div>
+
+        <div className="flexRow">
+          <button className="btn btnPrimary" disabled={busy || !validPoolId} onClick={load}>
+            Load Opportunity
+          </button>
+          <button className="btn" disabled={busy || !validPoolId || !flashBackrunExecutorAgent} onClick={execViaExecutorAgent}>
+            Execute (Executor Agent)
+          </button>
         </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-          <button className="btn btnPrimary" disabled={busy || poolId === "0x"} onClick={load}>
-            Load
-          </button>
-          <button className="btn" disabled={busy || poolId === "0x"} onClick={execFlash}>
-            Execute (Flashloan)
-          </button>
-          <button className="btn" disabled={busy || poolId === "0x"} onClick={execCapital}>
-            Execute (Capital)
-          </button>
+
+        <div className="kvs mt-4">
+          <div className="kv">
+            <b>Executor Agent</b>
+            <span>
+              {flashBackrunExecutorAgent
+                ? shortAddr(cfg.flashBackrunExecutorAgent)
+                : "Not configured (set VITE_FLASH_BACKRUN_EXECUTOR_AGENT)"}
+            </span>
+          </div>
+          {flashBackrunExecutorAgent ? (
+            <>
+              <div className="kv">
+                <b>Executor Max Flashloan</b>
+                <span>
+                  {executorConfig
+                    ? `${fmt18(executorConfig.maxFlashloanAmount)} (${String(executorConfig.maxFlashloanAmount)} raw)`
+                    : "Load to fetch"}
+                </span>
+              </div>
+              <div className="kv">
+                <b>Executor Min Profit</b>
+                <span>{executorConfig ? String(executorConfig.minProfit) : "Load to fetch"}</span>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
 
+      {/* Pending Opportunity Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>Pending Opportunity</h2>
-          <span className="pill">read-only</span>
+          <div className="cardTitleWrap">
+            <h2>Pending Opportunity</h2>
+            <InfoTooltip title="Backrun Opportunity Details">
+              Shows the current pending backrun opportunity for the selected pool. If executed is true, the opportunity
+              has already been captured.
+            </InfoTooltip>
+          </div>
+          <span className="pill">Read-Only</span>
         </div>
+
         {!info ? (
-          <p className="muted">Load a poolId to see details.</p>
+          <div className="emptyState">
+            <p>Load a pool ID to see pending opportunities</p>
+          </div>
         ) : (
           <div className="kvs">
             <div className="kv">
-              <b>Executed</b>
-              <span className="mono">{String(info.executed)}</span>
+              <b>Status</b>
+              <span>
+                <span className={`statusDot ${info.executed ? "inactive" : "active"}`} />
+                {info.executed ? "Already Executed" : "Available"}
+              </span>
             </div>
             <div className="kv">
               <b>Backrun Amount</b>
-              <span className="mono">{String(info.backrunAmount)}</span>
+              <span>{fmt18(BigInt(info.backrunAmount))}</span>
             </div>
             <div className="kv">
               <b>Direction</b>
-              <span className="mono">{info.zeroForOne ? "zeroForOne" : "oneForZero"}</span>
+              <span>{info.zeroForOne ? "Zero → One" : "One → Zero"}</span>
             </div>
             <div className="kv">
               <b>Detected Block</b>
-              <span className="mono">{String(info.blockNumber)}</span>
+              <span>{String(info.blockNumber)}</span>
             </div>
           </div>
         )}
+
+        <div className="kvs mt-4">
+          <div className="kv">
+            <b>Last Backrunner Event</b>
+            <span>{lastBackrunnerExec ? shortAddr(lastBackrunnerExec.txHash) : "—"}</span>
+          </div>
+          <div className="kv">
+            <b>Backrunner Profit</b>
+            <span>
+              {lastBackrunnerExec ? `${fmt18(lastBackrunnerExec.profit)} (${String(lastBackrunnerExec.profit)} raw)` : "—"}
+            </span>
+          </div>
+          <div className="kv">
+            <b>Backrunner Keeper</b>
+            <span>{lastBackrunnerExec ? shortAddr(lastBackrunnerExec.keeper) : "—"}</span>
+          </div>
+          <div className="kv">
+            <b>Last Executor Event</b>
+            <span>{lastExecutorExec ? shortAddr(lastExecutorExec.txHash) : "—"}</span>
+          </div>
+          <div className="kv">
+            <b>Executor Bounty</b>
+            <span>{lastExecutorExec ? `${fmt18(lastExecutorExec.bounty)} (${String(lastExecutorExec.bounty)} raw)` : "—"}</span>
+          </div>
+          <div className="kv">
+            <b>Executor Caller</b>
+            <span>{lastExecutorExec ? shortAddr(lastExecutorExec.caller) : "—"}</span>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
+
+// ==================== Admin Panel ====================
 
 function AdminPanel({
   coordinator,
@@ -1292,41 +1950,15 @@ function AdminPanel({
   const [agentAddr, setAgentAddr] = useState("0x");
   const [backupAddr, setBackupAddr] = useState("0x");
   const [enabled, setEnabled] = useState(true);
-
-  const [loadedHookAgents, setLoadedHookAgents] = useState<{ arb: string; fee: string; backrun: string } | null>(
-    null
-  );
+  const [loadedHookAgents, setLoadedHookAgents] = useState<{ arb: string; fee: string; backrun: string } | null>(null);
   const [arbId, setArbId] = useState<string>("—");
   const [feeId, setFeeId] = useState<string>("—");
   const [backrunId, setBackrunId] = useState<string>("—");
 
-  const [newAgentAddr, setNewAgentAddr] = useState("0x");
-  const [newAgentName, setNewAgentName] = useState("Swarm Hook Agent");
-  const [newAgentDesc, setNewAgentDesc] = useState("Hook agent");
-  const [newAgentTypeStr, setNewAgentTypeStr] = useState("generic");
-  const [newAgentVersion, setNewAgentVersion] = useState("1.0.0");
-
-  const [treasury, setTreasury] = useState("0x");
-  const [enfId, setEnfId] = useState(false);
-  const [enfRep, setEnfRep] = useState(false);
-
   const [routeAgent, setRouteAgent] = useState("0x");
   const [routeAgentId, setRouteAgentId] = useState("0");
   const [routeActive, setRouteActive] = useState(true);
-
-  const [repReg, setRepReg] = useState("0x");
-  const [tag1, setTag1] = useState("swarm-routing");
-  const [tag2, setTag2] = useState("mev-protection");
-  const [minRep, setMinRep] = useState("0");
-  const [clientsCsv, setClientsCsv] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const [switchRepRegistry, setSwitchRepRegistry] = useState("0x");
-  const [switchTag1, setSwitchTag1] = useState("swarm-hook");
-  const [switchTag2, setSwitchTag2] = useState("hook-agents");
-  const [switchMinRepWad, setSwitchMinRepWad] = useState("0");
-  const [switchClientsCsv, setSwitchClientsCsv] = useState("");
-  const [switchEnabled, setSwitchEnabled] = useState(false);
 
   async function ex(fn: () => Promise<any>) {
     onToast(null);
@@ -1334,9 +1966,9 @@ function AdminPanel({
     try {
       const tx = await fn();
       const receipt = await tx.wait(1);
-      onToast({ kind: "ok", msg: `tx=${receipt.hash}` });
+      onToast({ kind: "ok", msg: `Transaction confirmed: ${shortAddr(receipt.hash)}` });
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, coordinator ?? agentExecutor ?? swarmAgentRegistry) });
     } finally {
       setBusy(false);
     }
@@ -1347,7 +1979,11 @@ function AdminPanel({
     onToast(null);
     setBusy(true);
     try {
-      const [arb, fee, backrun] = await Promise.all([agentExecutor.agents(0), agentExecutor.agents(1), agentExecutor.agents(2)]);
+      const [arb, fee, backrun] = await Promise.all([
+        agentExecutor.agents(0),
+        agentExecutor.agents(1),
+        agentExecutor.agents(2)
+      ]);
       const next = { arb: String(arb), fee: String(fee), backrun: String(backrun) };
       setLoadedHookAgents(next);
 
@@ -1366,42 +2002,9 @@ function AdminPanel({
       setArbId(a0);
       setFeeId(a1);
       setBackrunId(a2);
-      onToast({ kind: "ok", msg: "Loaded hook agents from AgentExecutor." });
+      onToast({ kind: "ok", msg: "Hook agents loaded successfully" });
     } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function registerHookAgentOnERC8004(agentAddress: string, name: string, description: string) {
-    if (!swarmAgentRegistry) return onToast({ kind: "bad", msg: "Set VITE_SWARM_AGENT_REGISTRY to use ERC-8004 registration." });
-    if (isZeroAddr(agentAddress)) return onToast({ kind: "bad", msg: "Agent address is 0x0." });
-    onToast(null);
-    setBusy(true);
-    try {
-      const runner = swarmAgentRegistry.runner as any;
-      const idReg = await swarmAgentRegistry.identityRegistry();
-
-      // 1) Register identity in the official ERC-8004 identity registry (via SwarmAgentRegistry helper).
-      try {
-        const tx = await swarmAgentRegistry.registerAgent(agentAddress, name, description, newAgentTypeStr, newAgentVersion);
-        await tx.wait(1);
-      } catch {
-        // If already registered, this reverts; we'll just read the existing ID below.
-      }
-
-      const agentId = await swarmAgentRegistry.agentIdentities(agentAddress);
-      if (BigInt(agentId) === 0n) throw new Error("ERC-8004 register failed (agentId=0)");
-
-      // 2) Bind that agentId into the hook-agent contract so it can be reputation-scored later.
-      const agent = new ethers.Contract(agentAddress, SwarmAgentAbi, runner);
-      const tx2 = await agent.configureIdentity(agentId, idReg);
-      const r2 = await tx2.wait(1);
-      onToast({ kind: "ok", msg: `ERC-8004 linked. agentId=${String(agentId)} tx=${r2.hash}` });
-      await loadCurrentHookAgents();
-    } catch (e: any) {
-      onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
+      onToast({ kind: "bad", msg: fmtContractError(e, agentExecutor) });
     } finally {
       setBusy(false);
     }
@@ -1409,280 +2012,139 @@ function AdminPanel({
 
   return (
     <div className="row">
+      {/* Agent Executor Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>AgentExecutor (Hook Agents)</h2>
-          <span className="pill">owner-only</span>
+          <div className="cardTitleWrap">
+            <h2>Hook Agent Management</h2>
+            <InfoTooltip title="AgentExecutor Admin">
+              The AgentExecutor manages on-chain hook agents. As admin, you can:
+              <br />• Register/switch active agents
+              <br />• Set backup agents for failover
+              <br />• Enable/disable agent types
+              <br />• Configure reputation-based switching
+            </InfoTooltip>
+          </div>
+          <span className="pill warn">Owner Only</span>
         </div>
+
         {!agentExecutor ? (
-          <p className="muted">Set `VITE_AGENT_EXECUTOR` to use this panel.</p>
+          <p className="muted">Set VITE_AGENT_EXECUTOR to use this panel.</p>
         ) : (
           <>
-            <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+            <div className="flexRow mb-4">
               <button className="btn btnPrimary" disabled={busy} onClick={loadCurrentHookAgents}>
-                Load Hook Agents
+                Load Current Agents
               </button>
-              <span className="pill">registry {shortAddr(cfg.swarmAgentRegistry)}</span>
             </div>
 
-            {loadedHookAgents ? (
-              <div className="toast" style={{ marginBottom: 12 }}>
-                <div style={{ color: "rgba(255,255,255,0.78)", marginBottom: 8 }}>Current Hook Agents (from AgentExecutor)</div>
-                <div className="kvs" style={{ marginTop: 0 }}>
+            {loadedHookAgents && (
+              <div className="previewBox mb-4">
+                <div className="previewTitle">Current Hook Agents</div>
+                <div className="kvs">
                   <div className="kv">
-                    <b>ARBITRAGE</b>
-                    <span className="mono">{shortAddr(loadedHookAgents.arb)} · agentId {arbId}</span>
+                    <b>ARBITRAGE (0)</b>
+                    <span>{shortAddr(loadedHookAgents.arb)} · ID: {arbId}</span>
                   </div>
                   <div className="kv">
-                    <b>DYNAMIC_FEE</b>
-                    <span className="mono">{shortAddr(loadedHookAgents.fee)} · agentId {feeId}</span>
+                    <b>DYNAMIC_FEE (1)</b>
+                    <span>{shortAddr(loadedHookAgents.fee)} · ID: {feeId}</span>
                   </div>
                   <div className="kv">
-                    <b>BACKRUN</b>
-                    <span className="mono">{shortAddr(loadedHookAgents.backrun)} · agentId {backrunId}</span>
+                    <b>BACKRUN (2)</b>
+                    <span>{shortAddr(loadedHookAgents.backrun)} · ID: {backrunId}</span>
                   </div>
-                </div>
-                <div className="muted" style={{ marginTop: 10 }}>
-                  These IDs should be set by the deploy script. If they are `0`, redeploy with `REGISTER_ERC8004_HOOK_AGENTS=true`.
                 </div>
               </div>
-            ) : null}
+            )}
+
+            <div className="divider" />
+
+            <div className="sectionHeader">
+              <h3>Register/Switch Agent</h3>
+            </div>
 
             <div className="grid2">
               <div className="field">
-                <label>Agent Type (0=ARB,1=FEE,2=BACKRUN)</label>
+                <label>Agent Type (0=ARB, 1=FEE, 2=BACKRUN)</label>
                 <input value={agentType} onChange={(e) => setAgentType(e.target.value)} />
               </div>
               <div className="field">
-                <label>Agent Address</label>
+                <label>New Agent Address</label>
                 <input value={agentAddr} onChange={(e) => setAgentAddr(e.target.value)} />
               </div>
               <div className="field">
-                <label>Backup Agent Address</label>
+                <label>Backup Address</label>
                 <input value={backupAddr} onChange={(e) => setBackupAddr(e.target.value)} />
               </div>
               <div className="field">
                 <label>Enabled</label>
                 <select value={String(enabled)} onChange={(e) => setEnabled(e.target.value === "true")}>
-                  <option value="true">true</option>
-                  <option value="false">false</option>
+                  <option value="true">Enabled</option>
+                  <option value="false">Disabled</option>
                 </select>
               </div>
             </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+
+            <div className="flexRow mt-4">
               <button className="btn btnPrimary" disabled={busy} onClick={() => ex(() => agentExecutor.registerAgent(Number(agentType), agentAddr))}>
-                Register/Switch Agent
+                Register Agent
               </button>
               <button className="btn" disabled={busy} onClick={() => ex(() => agentExecutor.setBackupAgent(Number(agentType), backupAddr))}>
                 Set Backup
               </button>
-              <button
-                className="btn"
-                disabled={busy}
-                onClick={async () => {
-                  if (!agentExecutor) return;
-                  try {
-                    const b = await agentExecutor.backupAgents(Number(agentType));
-                    if (isZeroAddr(String(b))) return onToast({ kind: "bad", msg: "No backup agent set for this type." });
-                    await ex(() => agentExecutor.registerAgent(Number(agentType), String(b)));
-                  } catch (e: any) {
-                    onToast({ kind: "bad", msg: e?.shortMessage ?? e?.message ?? String(e) });
-                  }
-                }}
-              >
-                Switch To Backup Now
-              </button>
               <button className="btn" disabled={busy} onClick={() => ex(() => agentExecutor.setAgentEnabled(Number(agentType), enabled))}>
                 Set Enabled
               </button>
-              <button className="btn" disabled={busy} onClick={() => ex(() => agentExecutor.checkAndSwitchAgentIfBelowThreshold(Number(agentType)))}>
-                Check & Switch (Reputation)
-              </button>
             </div>
-
-            <div style={{ height: 12 }} />
-            <div className="cardHeader">
-              <h2>Reputation Threshold Switch (Hook Agents)</h2>
-              <span className="pill">owner-only · off-path</span>
-            </div>
-            <div className="grid2">
-              <div className="field">
-                <label>Agent Type</label>
-                <input value={agentType} onChange={(e) => setAgentType(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>Reputation Registry</label>
-                <input value={switchRepRegistry} onChange={(e) => setSwitchRepRegistry(e.target.value)} placeholder="0x…" />
-              </div>
-              <div className="field">
-                <label>tag1</label>
-                <input value={switchTag1} onChange={(e) => setSwitchTag1(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>tag2</label>
-                <input value={switchTag2} onChange={(e) => setSwitchTag2(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>minReputationWad (int256)</label>
-                <input value={switchMinRepWad} onChange={(e) => setSwitchMinRepWad(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>Enabled</label>
-                <select value={String(switchEnabled)} onChange={(e) => setSwitchEnabled(e.target.value === "true")}>
-                  <option value="true">true</option>
-                  <option value="false">false</option>
-                </select>
-              </div>
-              <div className="field" style={{ gridColumn: "1 / -1" }}>
-                <label>clients (comma-separated)</label>
-                <input value={switchClientsCsv} onChange={(e) => setSwitchClientsCsv(e.target.value)} placeholder="0xabc...,0xdef..." />
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-              <button
-                className="btn"
-                disabled={busy}
-                onClick={() =>
-                  ex(() =>
-                    agentExecutor.setReputationSwitchConfig(
-                      Number(agentType),
-                      switchRepRegistry,
-                      switchTag1,
-                      switchTag2,
-                      BigInt(switchMinRepWad),
-                      switchEnabled
-                    )
-                  )
-                }
-              >
-                Set Switch Config
-              </button>
-              <button
-                className="btn btnPrimary"
-                disabled={busy}
-                onClick={() =>
-                  ex(() =>
-                    agentExecutor.setReputationSwitchClients(
-                      Number(agentType),
-                      switchClientsCsv.split(",").map((x) => x.trim()).filter(Boolean)
-                    )
-                  )
-                }
-              >
-                Set Switch Clients
-              </button>
-            </div>
-
-            <div style={{ height: 12 }} />
-            <div className="cardHeader">
-              <h2>Onboard New Hook Agent (ERC-8004)</h2>
-              <span className="pill">advanced</span>
-            </div>
-            {!swarmAgentRegistry ? (
-              <p className="muted">Set `VITE_SWARM_AGENT_REGISTRY` to use this section.</p>
-            ) : (
-              <>
-                <div className="grid2">
-                  <div className="field">
-                    <label>New Agent Address</label>
-                    <input value={newAgentAddr} onChange={(e) => setNewAgentAddr(e.target.value)} />
-                  </div>
-                  <div className="field">
-                    <label>Name</label>
-                    <input value={newAgentName} onChange={(e) => setNewAgentName(e.target.value)} />
-                  </div>
-                  <div className="field" style={{ gridColumn: "1 / -1" }}>
-                    <label>Description</label>
-                    <input value={newAgentDesc} onChange={(e) => setNewAgentDesc(e.target.value)} />
-                  </div>
-                  <div className="field">
-                    <label>agentType (ERC-8004 metadata)</label>
-                    <input value={newAgentTypeStr} onChange={(e) => setNewAgentTypeStr(e.target.value)} />
-                  </div>
-                  <div className="field">
-                    <label>version</label>
-                    <input value={newAgentVersion} onChange={(e) => setNewAgentVersion(e.target.value)} />
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-                  <button
-                    className="btn btnPrimary"
-                    disabled={busy}
-                    onClick={() => registerHookAgentOnERC8004(newAgentAddr, newAgentName, newAgentDesc)}
-                  >
-                    Register + Link ERC-8004
-                  </button>
-                  <span className="muted">
-                    After linking, use “Register/Switch Agent” above to swap it into AgentExecutor.
-                  </span>
-                </div>
-              </>
-            )}
           </>
         )}
       </div>
 
+      {/* Coordinator Admin Card */}
       <div className="card">
         <div className="cardHeader">
-          <h2>Coordinator (Routing + ERC-8004)</h2>
-          <span className="pill">owner-only</span>
+          <div className="cardTitleWrap">
+            <h2>Coordinator Settings</h2>
+            <InfoTooltip title="Coordinator Admin">
+              The Coordinator handles intent routing. As admin, you can:
+              <br />• Register route agents (who can submit proposals)
+              <br />• Configure ERC-8004 enforcement (identity/reputation gating)
+              <br />• Set treasury address for fee collection
+            </InfoTooltip>
+          </div>
+          <span className="pill warn">Owner Only</span>
         </div>
+
         {!coordinator ? (
-          <p className="muted">Set `VITE_COORDINATOR` to use this panel.</p>
+          <p className="muted">Set VITE_COORDINATOR to use this panel.</p>
         ) : (
           <>
-            <div className="grid2">
-              <div className="field">
-                <label>Treasury</label>
-                <input value={treasury} onChange={(e) => setTreasury(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>Enforce Identity</label>
-                <select value={String(enfId)} onChange={(e) => setEnfId(e.target.value === "true")}>
-                  <option value="true">true</option>
-                  <option value="false">false</option>
-                </select>
-              </div>
-              <div className="field">
-                <label>Enforce Reputation</label>
-                <select value={String(enfRep)} onChange={(e) => setEnfRep(e.target.value === "true")}>
-                  <option value="true">true</option>
-                  <option value="false">false</option>
-                </select>
-              </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "end" }}>
-                <button className="btn" disabled={busy} onClick={() => ex(() => coordinator.setTreasury(treasury))}>
-                  Set Treasury
-                </button>
-                <button className="btn btnPrimary" disabled={busy} onClick={() => ex(() => coordinator.setEnforcement(enfId, enfRep))}>
-                  Set Enforcement
-                </button>
-              </div>
+            <div className="sectionHeader">
+              <h3>Register Route Agent</h3>
+              <InfoTooltip title="Route Agent Registration">
+                Route agents can submit proposals for intents. In the demo, you can register your own wallet as a route
+                agent to test the proposal flow manually.
+              </InfoTooltip>
             </div>
 
-            <div style={{ height: 12 }} />
-
-            <div className="cardHeader">
-              <h2>Register Route Agent</h2>
-              <span className="pill">proposal eligibility</span>
-            </div>
             <div className="grid2">
               <div className="field">
                 <label>Agent Address</label>
-                <input value={routeAgent} onChange={(e) => setRouteAgent(e.target.value)} />
+                <input value={routeAgent} onChange={(e) => setRouteAgent(e.target.value)} placeholder="0x..." />
               </div>
               <div className="field">
                 <label>ERC-8004 Agent ID</label>
-                <input value={routeAgentId} onChange={(e) => setRouteAgentId(e.target.value)} />
+                <input value={routeAgentId} onChange={(e) => setRouteAgentId(e.target.value)} placeholder="0" />
               </div>
               <div className="field">
                 <label>Active</label>
                 <select value={String(routeActive)} onChange={(e) => setRouteActive(e.target.value === "true")}>
-                  <option value="true">true</option>
-                  <option value="false">false</option>
+                  <option value="true">Active</option>
+                  <option value="false">Inactive</option>
                 </select>
               </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "end" }}>
+              <div className="flexRow" style={{ alignItems: "flex-end" }}>
                 <button
                   className="btn btnPrimary"
                   disabled={busy}
@@ -1693,52 +2155,10 @@ function AdminPanel({
               </div>
             </div>
 
-            <div style={{ height: 12 }} />
-
-            <div className="cardHeader">
-              <h2>Reputation Rules</h2>
-              <span className="pill">ERC-8004</span>
-            </div>
-            <div className="grid2">
-              <div className="field">
-                <label>Reputation Registry</label>
-                <input value={repReg} onChange={(e) => setRepReg(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>minReputationWad (int256)</label>
-                <input value={minRep} onChange={(e) => setMinRep(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>tag1</label>
-                <input value={tag1} onChange={(e) => setTag1(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>tag2</label>
-                <input value={tag2} onChange={(e) => setTag2(e.target.value)} />
-              </div>
-              <div className="field" style={{ gridColumn: "1 / -1" }}>
-                <label>clients (comma-separated addresses)</label>
-                <input value={clientsCsv} onChange={(e) => setClientsCsv(e.target.value)} />
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-              <button
-                className="btn"
-                disabled={busy}
-                onClick={() => ex(() => coordinator.setReputationConfig(repReg, tag1, tag2, BigInt(minRep)))}
-              >
-                Set Reputation Config
-              </button>
-              <button
-                className="btn btnPrimary"
-                disabled={busy}
-                onClick={() =>
-                  ex(() => coordinator.setReputationClients(clientsCsv.split(",").map((x) => x.trim()).filter(Boolean)))
-                }
-              >
-                Set Clients
-              </button>
-            </div>
+            <p className="muted mt-4">
+              💡 <b>Tip:</b> To test the full flow, register your connected wallet address as a route agent. Then you
+              can create intents and submit proposals yourself.
+            </p>
           </>
         )}
       </div>

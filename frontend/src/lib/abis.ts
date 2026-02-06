@@ -1,4 +1,19 @@
 export const SwarmCoordinatorAbi = [
+  // Errors (to decode reverts in the UI)
+  "error IntentExpired()",
+  "error IntentAlreadyExecuted(uint256 intentId)",
+  "error NoCandidates()",
+  "error NoProposals(uint256 intentId)",
+  "error AgentNotApproved()",
+  "error AlreadyProposed()",
+  "error DeadlinePassed(uint256 deadline)",
+  "error InvalidCandidate(uint256 candidateId)",
+  "error InvalidBps(uint256 value)",
+  "error UnauthorizedAgent(address agent)",
+  "error ReputationTooLow(int128 value,uint8 decimals)",
+  "error InvalidPath()",
+  "error FeedbackFailed()",
+
   "event IntentCreated(uint256 indexed intentId,address indexed requester,uint256 candidateCount)",
   "event ProposalSubmitted(uint256 indexed intentId,address indexed agent,uint256 indexed agentId,uint256 candidateId,int256 score)",
   "event IntentExecuted(uint256 indexed intentId,address indexed executor,uint256 candidateId,uint256 agentId)",
@@ -27,14 +42,22 @@ export const AgentExecutorAbi = [
   "event AgentSwitched(uint8 indexed agentType,address indexed oldAgent,address indexed newAgent)",
   "event AgentEnabled(uint8 indexed agentType,bool enabled)",
   "event AgentSwitchedDueToReputation(uint8 indexed agentType,address indexed oldAgent,address indexed newAgent,int256 reputationWad)",
+  "event OnchainScoringConfigUpdated(address indexed registry,string tag1,string tag2,int128 successWad,int128 failureWad,bool enabled)",
   "function owner() view returns (address)",
   "function agents(uint8 agentType) view returns (address)",
   "function backupAgents(uint8 agentType) view returns (address)",
   "function agentEnabled(uint8 agentType) view returns (bool)",
   "function agentStats(address agent) view returns (uint256 executionCount,uint256 successCount,uint256 totalValueProcessed,uint64 lastExecution)",
+  "function scoringEnabled() view returns (bool)",
+  "function scoringReputationRegistry() view returns (address)",
+  "function scoringTag1() view returns (string)",
+  "function scoringTag2() view returns (string)",
+  "function scoringSuccessWad() view returns (int128)",
+  "function scoringFailureWad() view returns (int128)",
   "function registerAgent(uint8 agentType,address agent)",
   "function setBackupAgent(uint8 agentType,address agent)",
   "function setAgentEnabled(uint8 agentType,bool enabled)",
+  "function setOnchainScoringConfig(address reputationRegistry,string tag1,string tag2,int128 successWad,int128 failureWad,bool enabled)",
   "function setReputationSwitchConfig(uint8 agentType,address registry,string tag1,string tag2,int256 minReputationWad,bool enabled)",
   "function setReputationSwitchClients(uint8 agentType,address[] clients)",
   "function checkAndSwitchAgentIfBelowThreshold(uint8 agentType) returns (bool)",
@@ -61,13 +84,18 @@ export const SwarmAgentAbi = [
 ];
 
 export const OracleRegistryAbi = [
+  "error StalePrice(uint256 updatedAt,uint256 maxAge)",
+  "error InvalidPrice(int256 price)",
+  "error FeedNotFound(address base,address quote)",
+  "error ZeroAddress()",
   "function getLatestPrice(address base,address quote) view returns (uint256 price,uint256 updatedAt)",
   "function getPriceFeed(address base,address quote) view returns (address)"
 ];
 
 export const PoolManagerAbi = [
-  "function getSlot0(bytes32 poolId) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)",
-  "function getLiquidity(bytes32 poolId) view returns (uint128)"
+  // Uniswap v4 PoolManager does NOT expose getSlot0/getLiquidity as external methods.
+  // Read pool state via IExtsload + the slot math used by v4-core's StateLibrary.
+  "function extsload(bytes32 slot) view returns (bytes32 value)"
 ];
 
 export const LPFeeAccumulatorAbi = [
@@ -85,6 +113,20 @@ export const FlashLoanBackrunnerAbi = [
   "function getPendingBackrun(bytes32 poolId) view returns (uint256 targetPrice,uint256 currentPrice,uint256 backrunAmount,bool zeroForOne,uint64 timestamp,uint64 blockNumber,bool executed)",
   "function executeBackrunPartial(bytes32 poolId,uint256 flashLoanAmount,uint256 minProfit)",
   "function executeBackrunWithCapital(bytes32 poolId,uint256 amountIn,uint256 minProfit)"
+];
+
+export const FlashBackrunExecutorAgentAbi = [
+  "event BackrunExecuted(bytes32 indexed poolId,address indexed caller,address token,uint256 amountIn,uint256 bounty)",
+  "function maxFlashloanAmount() view returns (uint256)",
+  "function minProfit() view returns (uint256)",
+  "function execute(bytes32 poolId) returns (address token,uint256 bounty)"
+];
+
+export const SimpleRouteAgentAbi = [
+  "event ProposalSent(uint256 indexed intentId,uint256 indexed candidateId,int256 score,bytes data)",
+  "function defaultCandidateId() view returns (uint256)",
+  "function defaultScore() view returns (int256)",
+  "function propose(uint256 intentId) returns (uint256 candidateId,int256 score)"
 ];
 
 export const ERC20Abi = [
