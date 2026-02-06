@@ -125,6 +125,14 @@ contract DeploySwarmProtocol is Script {
         agentExecutor.registerAgent(AgentType.ARBITRAGE, address(arbitrageAgent));
         agentExecutor.registerAgent(AgentType.DYNAMIC_FEE, address(dynamicFeeAgent));
         agentExecutor.registerAgent(AgentType.BACKRUN, address(backrunAgent));
+        agentExecutor.setOnchainScoringConfig(
+            ERC8004_REPUTATION,
+            "swarm-hook",
+            "hook-agents",
+            int128(int256(1e18)),
+            int128(int256(-1e18)),
+            true
+        );
 
         // Authorize hook to call executor
         agentExecutor.authorizeHook(address(hook), true);

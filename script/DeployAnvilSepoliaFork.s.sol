@@ -24,6 +24,7 @@ import {AgentExecutor} from "../src/agents/AgentExecutor.sol";
 import {ArbitrageAgent} from "../src/agents/ArbitrageAgent.sol";
 import {DynamicFeeAgent} from "../src/agents/DynamicFeeAgent.sol";
 import {BackrunAgent} from "../src/agents/BackrunAgent.sol";
+import {FlashBackrunExecutorAgent} from "../src/agents/FlashBackrunExecutorAgent.sol";
 import {LPFeeAccumulator} from "../src/LPFeeAccumulator.sol";
 import {OracleRegistry} from "../src/oracles/OracleRegistry.sol";
 import {SwarmCoordinator} from "../src/SwarmCoordinator.sol";
@@ -31,6 +32,7 @@ import {AgentType} from "../src/interfaces/ISwarmAgent.sol";
 import {FlashLoanBackrunner} from "../src/backrun/FlashLoanBackrunner.sol";
 import {HookLib} from "../src/libraries/HookLib.sol";
 import {SwarmAgentRegistry} from "../src/erc8004/SwarmAgentRegistry.sol";
+import {SimpleRouteAgent} from "../src/erc8004/SimpleRouteAgent.sol";
 
 interface IWETH9Like {
     function deposit() external payable;
@@ -74,10 +76,12 @@ contract DeployAnvilSepoliaFork is Script {
     DynamicFeeAgent public dynamicFeeAgent;
     BackrunAgent public backrunAgent;
     FlashLoanBackrunner public flashBackrunner;
+    FlashBackrunExecutorAgent public flashBackrunExecutorAgent;
     LPFeeAccumulator public lpFeeAccumulator;
     OracleRegistry public oracleRegistry;
     SwarmCoordinator public coordinator;
     SwarmAgentRegistry public swarmAgentRegistry;
+    SimpleRouteAgent public simpleRouteAgent;
     PoolSwapTest public swapRouter;
     PoolModifyLiquidityTest public liquidityRouter;
 
@@ -90,6 +94,7 @@ contract DeployAnvilSepoliaFork is Script {
     uint256 public arbAgentId;
     uint256 public feeAgentId;
     uint256 public backrunAgentId;
+    uint256 public simpleRouteAgentErc8004Id;
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -124,12 +129,24 @@ contract DeployAnvilSepoliaFork is Script {
 
         // 6) Coordinator (explicit ERC-8004 addresses because chainid=31337)
         coordinator = new SwarmCoordinator(IPoolManager(POOL_MANAGER), deployer, ERC8004_IDENTITY, ERC8004_REPUTATION);
+        simpleRouteAgent = new SimpleRouteAgent(address(coordinator), deployer);
+        coordinator.registerAgent(address(simpleRouteAgent), vm.envOr("SIMPLE_ROUTE_AGENT_ID", uint256(1)), true);
 
         // 7) Wire executor + hook
         agentExecutor.registerAgent(AgentType.ARBITRAGE, address(arbitrageAgent));
         agentExecutor.registerAgent(AgentType.DYNAMIC_FEE, address(dynamicFeeAgent));
         agentExecutor.registerAgent(AgentType.BACKRUN, address(backrunAgent));
         agentExecutor.authorizeHook(address(hook), true);
+        if (vm.envOr("ENABLE_ONCHAIN_SCORING", true)) {
+            agentExecutor.setOnchainScoringConfig(
+                ERC8004_REPUTATION,
+                "swarm-hook",
+                "hook-agents",
+                int128(int256(1e18)),
+                int128(int256(-1e18)),
+                true
+            );
+        }
 
         hook.setAgentExecutor(address(agentExecutor));
         hook.setOracleRegistry(address(oracleRegistry));
@@ -155,6 +172,10 @@ contract DeployAnvilSepoliaFork is Script {
         flashBackrunner.setRecorderAuthorization(address(hook), true);
         flashBackrunner.setForwarderAuthorization(address(backrunAgent), true);
         flashBackrunner.setKeeperAuthorization(deployer, true);
+        flashBackrunExecutorAgent =
+            new FlashBackrunExecutorAgent(address(flashBackrunner), deployer, 0.05 ether, 0);
+        flashBackrunner.setForwarderAuthorization(address(flashBackrunExecutorAgent), true);
+        flashBackrunner.setKeeperAuthorization(address(flashBackrunExecutorAgent), true);
 
         // 9) Routers for liquidity bootstrap on local fork
         swapRouter = new PoolSwapTest(IPoolManager(POOL_MANAGER));
@@ -341,6 +362,16 @@ contract DeployAnvilSepoliaFork is Script {
             "1.0.0"
         );
         backrunAgent.configureIdentity(backrunAgentId, ERC8004_IDENTITY);
+
+        simpleRouteAgentErc8004Id = swarmAgentRegistry.registerAgent(
+            address(simpleRouteAgent),
+            "Swarm Simple Route Agent",
+            "Submits default coordinator proposals on-chain",
+            "generic",
+            "1.0.0"
+        );
+        simpleRouteAgent.configureIdentity(simpleRouteAgentErc8004Id, ERC8004_IDENTITY);
+        coordinator.registerAgent(address(simpleRouteAgent), simpleRouteAgentErc8004Id, true);
     }
 
     function _sortCurrencies(Currency a, Currency b) internal pure returns (Currency, Currency) {
@@ -379,6 +410,10 @@ contract DeployAnvilSepoliaFork is Script {
         console.log(address(oracleRegistry));
         console.log("FlashLoanBackrunner:");
         console.log(address(flashBackrunner));
+        console.log("FlashBackrunExecutorAgent:");
+        console.log(address(flashBackrunExecutorAgent));
+        console.log("SimpleRouteAgent:");
+        console.log(address(simpleRouteAgent));
         console.log("SwarmAgentRegistry (ERC-8004):");
         console.log(address(swarmAgentRegistry));
         console.log("");
@@ -395,6 +430,8 @@ contract DeployAnvilSepoliaFork is Script {
         console.log(address(backrunAgent));
         console.log("  BackrunAgent ERC-8004 ID:");
         console.log(backrunAgentId);
+        console.log("  SimpleRouteAgent ERC-8004 ID:");
+        console.log(simpleRouteAgentErc8004Id);
         console.log("");
         console.log("Hook Pool:");
         console.log("  poolId:");
@@ -418,6 +455,8 @@ contract DeployAnvilSepoliaFork is Script {
         console.log("  VITE_AGENT_EXECUTOR=<above>");
         console.log("  VITE_LP_ACCUMULATOR=<above>");
         console.log("  VITE_FLASH_BACKRUNNER=<above>");
+        console.log("  VITE_FLASH_BACKRUN_EXECUTOR_AGENT=<above>");
+        console.log("  VITE_SIMPLE_ROUTE_AGENT=<above>");
         console.log("  VITE_SWARM_AGENT_REGISTRY=<above>");
         console.log("  VITE_ORACLE_REGISTRY=<above>");
         console.log("  VITE_POOL_MANAGER:");
