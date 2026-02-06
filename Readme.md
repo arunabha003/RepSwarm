@@ -22,6 +22,7 @@ Use the docs:
 
 - `docs/ANVIL_SEPOLIA_E2E.md` (Anvil + deploy scripts)
 - `docs/FRONTEND_E2E_GUIDE.md` (step-by-step UI testing)
+- `docs/SEPOLIA_DEPLOYMENT.md` (live Sepolia deployment + liquidity bootstrap)
 
 In short:
 
@@ -126,6 +127,48 @@ See:
 
 - `docs/ANVIL_SEPOLIA_E2E.md`
 - `docs/FRONTEND_E2E_GUIDE.md`
+
+## Live Sepolia Deployment
+
+Latest live deployment from `script/DeploySwarmProtocol.s.sol` on Sepolia (`chainId=11155111`):
+
+- Deployer / Treasury: `0x28ea4eF61ac4cca3ed6a64dBb5b2D4be1aDC9814`
+  (https://sepolia.etherscan.io/address/0x28ea4eF61ac4cca3ed6a64dBb5b2D4be1aDC9814)
+- PoolManager: `0x8C4BcBE6b9eF47855f97E675296FA3F6fafa5F1A`
+  (https://sepolia.etherscan.io/address/0x8C4BcBE6b9eF47855f97E675296FA3F6fafa5F1A)
+- WETH (Aave-market): `0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c`
+  (https://sepolia.etherscan.io/address/0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c)
+- DAI (Aave-market): `0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357`
+  (https://sepolia.etherscan.io/address/0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357)
+- Oracle feed (ETH/USD): `0x694AA1769357215DE4FAC081bf1f309aDC325306`
+  (https://sepolia.etherscan.io/address/0x694AA1769357215DE4FAC081bf1f309aDC325306)
+- OracleRegistry: `0x447bA29FB5CB1c496765577A5A010362D3F338Aa`
+  (https://sepolia.etherscan.io/address/0x447bA29FB5CB1c496765577A5A010362D3F338Aa)
+- LPFeeAccumulator: `0x9aA9270132050Ee021A2d742b2ab8db1eAc96A27`
+  (https://sepolia.etherscan.io/address/0x9aA9270132050Ee021A2d742b2ab8db1eAc96A27)
+- AgentExecutor: `0x8b574f4Da13dF49384BD40cD1265FC6aeFB8B030`
+  (https://sepolia.etherscan.io/address/0x8b574f4Da13dF49384BD40cD1265FC6aeFB8B030)
+- SwarmHook: `0x1e1D4f1953C25eF2A73eC27F21bb44d29f5400CC`
+  (https://sepolia.etherscan.io/address/0x1e1D4f1953C25eF2A73eC27F21bb44d29f5400CC)
+- SwarmCoordinator: `0xC22883468c52DAF4682Bf7369D4FD4E8f1aa813d`
+  (https://sepolia.etherscan.io/address/0xC22883468c52DAF4682Bf7369D4FD4E8f1aa813d)
+- SimpleRouteAgent: `0x970E971986f0fbE063d7fCCEBB9f95e13D1c277B`
+  (https://sepolia.etherscan.io/address/0x970E971986f0fbE063d7fCCEBB9f95e13D1c277B)
+- ArbitrageAgent: `0xbef37DDcDb8EBF20AC80097a84CA9168DC6f7a0C` (ERC-8004 ID `949`)
+  (https://sepolia.etherscan.io/address/0xbef37DDcDb8EBF20AC80097a84CA9168DC6f7a0C)
+- DynamicFeeAgent: `0xB00a995bebe79d54AABA0C1C3Ec9fe4F581962d0` (ERC-8004 ID `950`)
+  (https://sepolia.etherscan.io/address/0xB00a995bebe79d54AABA0C1C3Ec9fe4F581962d0)
+- BackrunAgent: `0xC96a8Ab8D0E5303C7D2B08449F2F94279cE96C2d` (ERC-8004 ID `951`)
+  (https://sepolia.etherscan.io/address/0xC96a8Ab8D0E5303C7D2B08449F2F94279cE96C2d)
+- FlashLoanBackrunner: `0x1a8F0Ea9b4B7d0629027F6918002997d8151c56b`
+  (https://sepolia.etherscan.io/address/0x1a8F0Ea9b4B7d0629027F6918002997d8151c56b)
+- FlashBackrunExecutorAgent: `0x5Ca6176d6C6F247fD2535C1db554163F80b79581`
+  (https://sepolia.etherscan.io/address/0x5Ca6176d6C6F247fD2535C1db554163F80b79581)
+- SwarmAgentRegistry: `0x18Ba1E67d28df71f4a91243eb0F4B87e55e90473`
+  (https://sepolia.etherscan.io/address/0x18Ba1E67d28df71f4a91243eb0F4B87e55e90473)
+- SimpleRouteAgent ERC-8004 ID: `952`
+
+This run used `BOOTSTRAP_POOLS=false`, so pool creation/liquidity bootstrap is not included yet.
 
 ## Notes / Assumptions
 
