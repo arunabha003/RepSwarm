@@ -39,10 +39,12 @@ In short:
   - `DynamicFeeAgent`: recommends v4 dynamic fee override
   - `BackrunAgent`: detects post-swap divergence and records backrun opportunities
 - `FlashLoanBackrunner`: stores opportunities and executes backruns (capital mode or Aave flashloan mode); distributes profits (LPs + keeper).
+- `FlashBackrunExecutorAgent`: permissionless on-chain executor that can trigger `FlashLoanBackrunner` (no dedicated keeper server required).
 - `LPFeeAccumulator`: accumulates captured value and donates to LPs.
 - `OracleRegistry`: maps token pairs to Chainlink feeds and exposes `getLatestPrice`.
 - `SwarmCoordinator`: intent-based swap flow (route proposals + execute), optionally gated by ERC-8004 identity/reputation; writes ERC-8004 feedback on success.
 - `SwarmAgentRegistry`: helper for minting/linking ERC-8004 identities for agent contracts (metadata + mapping).
+- `SimpleRouteAgent`: minimal on-chain route agent that submits proposals to coordinator automatically with configurable defaults.
 
 For the full diagram and flow: `ARCHITECTURE.md`.
 
@@ -70,7 +72,8 @@ When a swap executes through the hooked pool:
 Backrun execution is intentionally a separate transaction so swaps never revert because “automation failed”.
 
 - Manual: execute from the frontend `Backrun` tab.
-- Automatic: run the keeper (`keeper/`) to listen for `BackrunOpportunityDetected` and execute immediately.
+- Automatic (on-chain): call `FlashBackrunExecutorAgent.execute(poolId)` permissionlessly.
+- Automatic (off-chain optional): run the keeper (`keeper/`) to listen for `BackrunOpportunityDetected` and execute immediately.
 
 ## ERC-8004 (Where It Fits)
 
@@ -83,8 +86,9 @@ ERC-8004 is used in two places:
   - Hook agents can be linked to ERC-8004 identity IDs (for “official agent identities”).
   - Admin can configure reputation threshold switching in `AgentExecutor` (off-path, never inside swaps).
 
-Note: a reputation threshold only matters if someone is actually writing reputation feedback. For local demos, you can run
-the scoring keeper in `keeper/` (`npm run score`) to post +1/-1 feedback from `AgentExecutor.AgentExecuted` events.
+Note: a reputation threshold only matters if someone is actually writing reputation feedback. `AgentExecutor` now supports
+optional on-chain scoring (`setOnchainScoringConfig`) to post +1/-1 feedback directly, and the off-chain scorer in
+`keeper/` remains optional.
 
 ## Tests
 
