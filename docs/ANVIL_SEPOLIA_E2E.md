@@ -37,7 +37,7 @@ Notes:
 
 ```bash
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
-SEED_AAVE_LIQUIDITY=true \
+SEED_AAVE_LIQUIDITY=false \
 forge script script/DeployAnvilSepoliaFork.s.sol:DeployAnvilSepoliaFork \
   --rpc-url http://127.0.0.1:8545 \
   --broadcast -vvv
@@ -52,6 +52,8 @@ The script prints a “LOCAL DEPLOY SUMMARY” including:
 
 Notes:
 - `SEED_AAVE_LIQUIDITY=true` is recommended for local E2E. It tries (best-effort) to `supply()` WETH + DAI into Aave so flashloans work deterministically on the fork.
+- Some Aave Sepolia reserves (notably stables) can be disabled/frozen at times. By default we only seed WETH now.
+- To also attempt seeding DAI: set `SEED_AAVE_DAI=true` (may revert depending on Aave config).
 
 If you already deployed without seeding, you can run:
 

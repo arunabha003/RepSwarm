@@ -32,6 +32,7 @@ The system is designed so user swaps never depend on off-chain automation. Anyth
     - supports enable/disable
     - supports backup agents (failover if primary reverts)
     - tracks basic per-agent stats (`agentStats`)
+    - optional on-chain ERC-8004 scoring (`setOnchainScoringConfig`) to write feedback without an off-chain scorer
   - Optional reputation-based switching is supported, but it is admin-triggered and never called inside swaps.
 
 - Hook agents (on-chain)
@@ -54,6 +55,11 @@ The system is designed so user swaps never depend on off-chain automation. Anyth
     - `BackrunOpportunityDetected`
     - `BackrunExecuted`
 
+- `src/agents/FlashBackrunExecutorAgent.sol`
+  - Permissionless on-chain executor for `FlashLoanBackrunner`.
+  - Any caller can trigger execution and receive bounty routed through the agent contract.
+  - Requires owner setup on `FlashLoanBackrunner` (authorize as forwarder + keeper).
+
 - `src/LPFeeAccumulator.sol`
   - Accumulates profits per pool/currency.
   - Anyone can call `donateToLPs(poolId)` when thresholds are met.
@@ -72,6 +78,10 @@ The system is designed so user swaps never depend on off-chain automation. Anyth
     - identity gating
     - reputation threshold gating
   - Writes ERC-8004 feedback (+1 WAD) on successful execution (best-effort, never reverts the swap on feedback failure).
+
+- `src/erc8004/SimpleRouteAgent.sol`
+  - Minimal on-chain route agent that submits coordinator proposals with configurable defaults.
+  - Replaces manual UI proposal submission loops for basic demos.
 
 - `src/erc8004/SwarmAgentRegistry.sol`
   - Helper for minting and tracking ERC-8004 agent identities (metadata + mapping).
@@ -108,10 +118,12 @@ The system is designed so user swaps never depend on off-chain automation. Anyth
    - the swap occurs through the hooked pool, so the hook logic runs (swap plane)
 4. Coordinator writes positive ERC-8004 feedback for the winning route agent (best-effort).
 
-### C) Backrun Execution (Off-Chain Trigger)
+### C) Backrun Execution (Permissionless or Off-Chain Trigger)
 
 1. Hook records opportunity and emits `BackrunOpportunityDetected`.
-2. Keeper watches events and calls:
+2. Executor calls:
+   - permissionless on-chain `FlashBackrunExecutorAgent.execute(poolId)`, or
+   - off-chain keeper watches events and calls:
    - `FlashLoanBackrunner.executeBackrunPartial(...)` (flashloan mode), or
    - `FlashLoanBackrunner.executeBackrunWithCapital(...)` (capital mode)
 3. Profits are routed:
@@ -137,7 +149,7 @@ Swarm supports three layers of switching:
 
 This is off-path to avoid introducing external calls and failure modes into swaps.
 
-## Off-Chain Services
+## Off-Chain Services (Optional)
 
 - Backrun keeper: `keeper/backrun-keeper.js`
   - listens to `BackrunOpportunityDetected`
@@ -146,6 +158,7 @@ This is off-path to avoid introducing external calls and failure modes into swap
 - Scoring keeper: `keeper/agent-score-keeper.js`
   - listens to `AgentExecutor.AgentExecuted`
   - writes +1/-1 feedback to ERC-8004 ReputationRegistry (so threshold switching has real data)
+  - optional if using on-chain scoring in `AgentExecutor`
 
 ## Deployment (Local Sepolia Fork)
 
@@ -161,4 +174,3 @@ See:
 
 - `docs/ANVIL_SEPOLIA_E2E.md`
 - `docs/FRONTEND_E2E_GUIDE.md`
-

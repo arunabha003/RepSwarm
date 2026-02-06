@@ -29,13 +29,18 @@ Deploy:
 ```bash
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
 SEED_AAVE_LIQUIDITY=true \
+SEED_AAVE_DAI=false \
 REGISTER_ERC8004_HOOK_AGENTS=true \
+ENABLE_ONCHAIN_SCORING=true \
 forge script script/DeployAnvilSepoliaFork.s.sol:DeployAnvilSepoliaFork \
   --rpc-url http://127.0.0.1:8545 \
   --broadcast -vvv
 ```
 
 From the deploy output, copy the `.env` values.
+Also copy:
+- `SimpleRouteAgent`
+- `FlashBackrunExecutorAgent`
 
 ## 3) Configure + Run Frontend
 
@@ -53,6 +58,8 @@ Fill `frontend/.env` with addresses printed by the deploy script:
 - `VITE_AGENT_EXECUTOR=...`
 - `VITE_LP_ACCUMULATOR=...`
 - `VITE_FLASH_BACKRUNNER=...`
+- `VITE_FLASH_BACKRUN_EXECUTOR_AGENT=...`
+- `VITE_SIMPLE_ROUTE_AGENT=...`
 - `VITE_SWARM_AGENT_REGISTRY=...`
 - `VITE_ORACLE_REGISTRY=...`
 - `VITE_POOL_MANAGER=0x8C4BcBE6b9eF47855f97E675296FA3F6fafa5F1A`
@@ -93,28 +100,19 @@ If oracle/pool values are empty:
 
 Tab `Quick Intent`:
 
-1. Click `Refresh Balance/Allowance`
-2. Click `Approve In Token` (first time only)
+1. Click `Refresh Balance`
+2. Click `Approve Token` (first time only)
 3. Set `Amount In` (use decimals, e.g. `1000.0`)
 4. Click `Create Intent`
 
 Copy the `intentId` from the toast.
 
-### 5.3 Propose + Execute (Complete the Swap)
+### 5.3 Route Proposal Without Server (From UI)
 
-Tab `Admin` (one-time):
-- Set `Enforce Identity=false`, `Enforce Reputation=false`, click `Set Enforcement`
-- Register your wallet as a route agent (so you can propose in this demo):
-  - `Register Route Agent` -> `Agent Address=<your wallet>`, `ERC-8004 Agent ID=1`, `Active=true`
+Use `SimpleRouteAgent` from the frontend (no off-chain route-agent service and no `cast` needed):
 
-Tab `Intent Desk`:
-1. Paste `Intent ID`, click `Load`
-2. Under `Submit Proposal`:
-- `Candidate ID=0`
-- `Score=0`
-- `Data=0x`
-3. Click `Submit Proposal`
-4. Click `Execute (Requester)`
+1. Tab `Intent Desk` -> paste `Intent ID`, click `Load Intent`
+2. Click `Auto Propose + Execute via Router`
 
 Success = intent becomes `Executed=true` and your balances change.
 
@@ -125,41 +123,51 @@ Tab `LP Donations`:
 2. Click `Load`
 3. If `Can Donate=true` and amounts are non-zero, click `Donate To LPs`
 
-### 5.5 Backrun (Capital Mode)
+### 5.5 Backrun (Detection vs Execution)
 
 Tab `Backrun`:
-1. Paste the hook `poolId`
+1. Use the hook `poolId` (bytes32) from deploy output (`Hook Pool -> poolId`).  
+   The frontend auto-fills this if your `VITE_POOL_*` values are correct.
 2. Click `Load`
 3. If `Backrun Amount=0`, do a bigger swap (repeat intent with higher `Amount In`)
-4. Click `Execute (Capital)`
+4. Verify `Status=Available`
 
-### 5.6 Backrun (Flashloan Mode)
+Important behavior:
+- Opportunity detection is done automatically in swap flow by the hook/backrun agent.
+- Execution is not self-triggered on-chain. A transaction must call one of the execute paths.
+
+### 5.6 Backrun via Frontend (No keeper server)
+
+Tab `Backrun`:
+1. Click `Execute (Executor Agent)`
+2. Wait for confirmation toast
+3. Click `Load` again
+4. Verify telemetry fields update:
+   - `Last Executor Event` / `Executor Bounty` / `Executor Caller`
+   - `Last Backrunner Event` / `Backrunner Profit` / `Backrunner Keeper`
+
+This is the permissionless on-chain flow, no external keeper process required.
+
+### 5.7 Backrun Flashloan Prereq
 
 Flashloan mode requires Aave liquidity on the fork.
 
 If you deployed with `SEED_AAVE_LIQUIDITY=true`, it should work.
 
-Tab `Backrun` -> click `Execute (Flashloan)`.
+### 5.8 Backrun Without Frontend (Optional cast path)
 
-### 5.7 Automatic Backrun (Event-Driven Keeper)
-
-Run the keeper:
+Use `FlashBackrunExecutorAgent` directly from CLI:
 
 ```bash
-cd keeper
-npm install
-cp .env.example .env
-npm run start
+cast send <FLASH_BACKRUN_EXECUTOR_AGENT_ADDRESS> \
+  "execute(bytes32)(address,uint256)" <HOOK_POOL_ID> \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key <ANY_FUNDED_ANVIL_KEY>
 ```
 
-Set in `keeper/.env`:
-- `SEPOLIA_RPC_URL=http://127.0.0.1:8545`
-- `FLASH_BACKRUNNER_ADDRESS=<deployed FlashLoanBackrunner>`
-- `KEEPER_PRIVATE_KEY=<anvil key>`
+Any funded caller can trigger this transaction and receive the keeper bounty routed via the agent contract.
 
-Now perform a big intent swap again. The keeper should auto-execute the backrun when it sees the event.
-
-### 5.8 Hook Agent Switching (Admin)
+### 5.9 Hook Agent Switching (Admin)
 
 Tab `Admin`:
 - `AgentExecutor (Hook Agents)` lets you:
@@ -167,32 +175,24 @@ Tab `Admin`:
   - set a backup agent (`Set Backup`)
   - force switch to backup (`Switch To Backup Now`)
 
-### 5.9 Reputation-Based Switching (Threshold)
+### 5.10 Reputation Scoring (No scoring server required)
 
-To make threshold switching meaningful, you need reputation entries for hook agents.
+`AgentExecutor` can write ERC-8004 feedback directly when agents execute (configured by deploy script with `ENABLE_ONCHAIN_SCORING=true`).
 
-Run the scoring keeper:
-
-```bash
-cd keeper
-npm run score
-```
-
-In `keeper/.env`, set:
-- `AGENT_EXECUTOR_ADDRESS=<AgentExecutor>`
-- `ERC8004_REPUTATION_REGISTRY=0x8004B663056A597Dffe9eCcC1965A193B7388713`
-
-In the frontend `Admin` tab:
-1. Configure reputation switch config (registry + tags + min threshold + enabled)
-2. Set switch clients to include the scorer keeper EOA address
-3. Click `Check & Switch (Reputation)` for the agent type
+After a few swaps:
+1. Click `Refresh Dashboard`
+2. In `Hook Agents`, verify `Rep` shows signed values and feedback count.
+3. Use `Admin` tab to configure reputation threshold switching and call `Check & Switch (Reputation)`.
 
 ## Troubleshooting
 
-- If `Submit Proposal` reverts:
-  - you didn’t register a route agent in `Coordinator.registerAgent(...)` (Admin tab)
-- If `Execute (Flashloan)` reverts:
-  - seed Aave liquidity (deploy with `SEED_AAVE_LIQUIDITY=true`)
+- If router proposal step reverts:
+  - ensure `SimpleRouteAgent` is registered in coordinator (deploy script does this by default)
+- If `Auto Propose + Execute via Router` reverts:
+  - ensure `VITE_SIMPLE_ROUTE_AGENT` is set and the intent has at least one candidate path (`candidateId=0` exists)
+- If `FlashBackrunExecutorAgent.execute(poolId)` reverts:
+  - there may be no pending opportunity, opportunity expired, flashloan path not profitable, or Aave fork liquidity not seeded
+- If `Execute (Executor Agent)` button is disabled:
+  - set `VITE_FLASH_BACKRUN_EXECUTOR_AGENT` in `frontend/.env`
 - If dashboard is blank:
   - ensure `VITE_POOL_*` params are correct for the deployed pool and `VITE_POOL_MANAGER` is set
-
