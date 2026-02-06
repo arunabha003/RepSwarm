@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { cfg } from "../lib/config";
 import { connectWallet, getReadProvider } from "../lib/wallet";
@@ -17,7 +17,7 @@ import {
 } from "../lib/abis";
 import { encodeCandidatePath, toBytes32PoolIdFromPoolKey, type PathKey } from "../lib/encode";
 
-type Tab = "swap" | "intent" | "lp" | "backrun" | "admin";
+type Tab = "dashboard" | "swap" | "intent" | "lp" | "backrun" | "admin";
 
 type WalletState =
   | { status: "disconnected" }
@@ -198,7 +198,7 @@ function InfoTooltip({ title, children }: InfoTooltipProps) {
 // ==================== Main App ====================
 
 export function App() {
-  const [tab, setTab] = useState<Tab>("swap");
+  const [tab, setTab] = useState<Tab>("dashboard");
   const [wallet, setWallet] = useState<WalletState>({ status: "disconnected" });
   const [toast, setToast] = useState<{ kind: "ok" | "bad"; msg: string } | null>(null);
 
@@ -296,6 +296,9 @@ export function App() {
 
       {/* Tab Navigation */}
       <div className="tabs" role="tablist" aria-label="Swarm tabs">
+        <button className="tab" aria-selected={tab === "dashboard"} onClick={() => setTab("dashboard")}>
+          📊 Dashboard
+        </button>
         <button className="tab" aria-selected={tab === "swap"} onClick={() => setTab("swap")}>
           🔄 Quick Intent
         </button>
@@ -321,20 +324,19 @@ export function App() {
         </div>
       )}
 
-      {/* Protocol Dashboard */}
-      <ProtocolDashboard
-        wallet={wallet}
-        coordinator={coordinator}
-        agentExecutor={agentExecutor}
-        simpleRouteAgent={simpleRouteAgent}
-        swarmAgentRegistry={swarmAgentRegistry}
-        oracleRegistry={oracleRegistry}
-        poolManager={poolManager}
-        onToast={setToast}
-      />
-
       {/* Tab Content */}
-      {tab === "swap" ? (
+      {tab === "dashboard" ? (
+        <ProtocolDashboard
+          wallet={wallet}
+          coordinator={coordinator}
+          agentExecutor={agentExecutor}
+          simpleRouteAgent={simpleRouteAgent}
+          swarmAgentRegistry={swarmAgentRegistry}
+          oracleRegistry={oracleRegistry}
+          poolManager={poolManager}
+          onToast={setToast}
+        />
+      ) : tab === "swap" ? (
         <QuickIntentPanel coordinator={coordinator} poolManager={poolManager} onToast={setToast} />
       ) : tab === "intent" ? (
         <IntentDeskPanel coordinator={coordinator} simpleRouteAgent={simpleRouteAgent} onToast={setToast} />
@@ -695,53 +697,142 @@ function ProtocolDashboard({
           )}
         </div>
 
-        {/* Hook Agents Card */}
-        <div className="dashCard">
-          <div className="dashCardHeader">
-            <div className="dashCardTitle">
-              🤖 Hook Agents
-              <InfoTooltip title="On-Chain Hook Agents">
-                These AI agents run on every swap through the hooked pool:
-                <br />• <b>ARB</b>: Captures pre-swap arbitrage
-                <br />• <b>FEE</b>: Sets dynamic fees
-                <br />• <b>BACKRUN</b>: Detects post-swap opportunities
-              </InfoTooltip>
-            </div>
-          </div>
-          {!hookAgents ? (
-            <p className="muted">Click Refresh to load agent status</p>
-          ) : (
-            <div className="kvs">
-              {[hookAgents.arb, hookAgents.fee, hookAgents.backrun].map((a: any) => (
-                <div className="kv" key={a.type}>
-                  <b>{a.type}</b>
+        {/* Individual Hook Agent Cards */}
+        {hookAgents ? (
+          <>
+            {/* Arbitrage Agent Card */}
+            <div className="dashCard agent-arb">
+              <div className="agentCardRow">
+                <div className="agentCardIcon arb">🎯</div>
+                <div>
+                  <div className="agentCardName">Arbitrage Agent</div>
+                  <span className="agentCardType arb">ARB · Slot 0</span>
+                </div>
+              </div>
+              <div className="kvs">
+                <div className="kv">
+                  <b>Address</b>
+                  <span>{shortAddr(hookAgents.arb.addr)}</span>
+                </div>
+                <div className="kv">
+                  <b>Agent ID</b>
+                  <span>{hookAgents.arb.agentId ?? "—"}</span>
+                </div>
+                <div className="kv">
+                  <b>Confidence</b>
+                  <span>{hookAgents.arb.confidence !== undefined ? hookAgents.arb.confidence : "—"}</span>
+                </div>
+                <div className="kv">
+                  <b>Executions</b>
+                  <span>{hookAgents.arb.exec ?? "—"} total · {hookAgents.arb.ok ?? "—"} ok</span>
+                </div>
+                <div className="kv">
+                  <b>Reputation</b>
                   <span>
-                    {shortAddr(a.addr)} · Rep:{" "}
-                    {a.repWad !== undefined
-                      ? `${fmtSignedUnits(BigInt(a.repWad), 18, 3)} (${a.repCount ?? "0"} fb)`
+                    {hookAgents.arb.repWad !== undefined
+                      ? `${fmtSignedUnits(BigInt(hookAgents.arb.repWad), 18, 3)} (${hookAgents.arb.repCount ?? "0"} fb)`
                       : "—"}
                   </span>
                 </div>
-              ))}
+              </div>
             </div>
-          )}
-        </div>
+
+            {/* Dynamic Fee Agent Card */}
+            <div className="dashCard agent-fee">
+              <div className="agentCardRow">
+                <div className="agentCardIcon fee">⚡</div>
+                <div>
+                  <div className="agentCardName">Dynamic Fee Agent</div>
+                  <span className="agentCardType fee">FEE · Slot 1</span>
+                </div>
+              </div>
+              <div className="kvs">
+                <div className="kv">
+                  <b>Address</b>
+                  <span>{shortAddr(hookAgents.fee.addr)}</span>
+                </div>
+                <div className="kv">
+                  <b>Agent ID</b>
+                  <span>{hookAgents.fee.agentId ?? "—"}</span>
+                </div>
+                <div className="kv">
+                  <b>Confidence</b>
+                  <span>{hookAgents.fee.confidence !== undefined ? hookAgents.fee.confidence : "—"}</span>
+                </div>
+                <div className="kv">
+                  <b>Executions</b>
+                  <span>{hookAgents.fee.exec ?? "—"} total · {hookAgents.fee.ok ?? "—"} ok</span>
+                </div>
+                <div className="kv">
+                  <b>Reputation</b>
+                  <span>
+                    {hookAgents.fee.repWad !== undefined
+                      ? `${fmtSignedUnits(BigInt(hookAgents.fee.repWad), 18, 3)} (${hookAgents.fee.repCount ?? "0"} fb)`
+                      : "—"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Backrun Agent Card */}
+            <div className="dashCard agent-backrun">
+              <div className="agentCardRow">
+                <div className="agentCardIcon backrun">🔁</div>
+                <div>
+                  <div className="agentCardName">Backrun Agent</div>
+                  <span className="agentCardType backrun">BACKRUN · Slot 2</span>
+                </div>
+              </div>
+              <div className="kvs">
+                <div className="kv">
+                  <b>Address</b>
+                  <span>{shortAddr(hookAgents.backrun.addr)}</span>
+                </div>
+                <div className="kv">
+                  <b>Agent ID</b>
+                  <span>{hookAgents.backrun.agentId ?? "—"}</span>
+                </div>
+                <div className="kv">
+                  <b>Confidence</b>
+                  <span>{hookAgents.backrun.confidence !== undefined ? hookAgents.backrun.confidence : "—"}</span>
+                </div>
+                <div className="kv">
+                  <b>Executions</b>
+                  <span>{hookAgents.backrun.exec ?? "—"} total · {hookAgents.backrun.ok ?? "—"} ok</span>
+                </div>
+                <div className="kv">
+                  <b>Reputation</b>
+                  <span>
+                    {hookAgents.backrun.repWad !== undefined
+                      ? `${fmtSignedUnits(BigInt(hookAgents.backrun.repWad), 18, 3)} (${hookAgents.backrun.repCount ?? "0"} fb)`
+                      : "—"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="dashCard">
+            <div className="dashCardHeader">
+              <div className="dashCardTitle">🤖 Hook Agents</div>
+            </div>
+            <p className="muted">Click Refresh to load agent status</p>
+          </div>
+        )}
 
         {/* Route Agent Card */}
-        <div className="dashCard">
-          <div className="dashCardHeader">
-            <div className="dashCardTitle">
-              🧭 Route Agent (ERC-8004)
-              <InfoTooltip title="Coordinator Route Agent">
-                This is the on-chain `SimpleRouteAgent` used for auto proposal submission. Its ERC-8004 identity and
-                reputation are shown here for visibility.
-              </InfoTooltip>
+        <div className="dashCard agent-route">
+          <div className="agentCardRow">
+            <div className="agentCardIcon route">🧭</div>
+            <div>
+              <div className="agentCardName">Route Agent</div>
+              <span className="agentCardType route">ERC-8004 · Router</span>
             </div>
           </div>
           {!routeAgentInfo ? (
             <p className="muted">Click Refresh to load route agent status</p>
           ) : !routeAgentInfo.configured ? (
-            <p className="muted">Not configured (set `VITE_SIMPLE_ROUTE_AGENT`)</p>
+            <p className="muted">Not configured (set VITE_SIMPLE_ROUTE_AGENT)</p>
           ) : (
             <div className="kvs">
               <div className="kv">
@@ -764,7 +855,7 @@ function ProtocolDashboard({
                 <span>{routeAgentInfo.erc8004Id ?? "—"}</span>
               </div>
               <div className="kv">
-                <b>Rep</b>
+                <b>Reputation</b>
                 <span>
                   {routeAgentInfo.repWad !== undefined
                     ? `${fmtSignedUnits(BigInt(routeAgentInfo.repWad), 18, 3)} (${routeAgentInfo.repCount ?? "0"} fb)`
@@ -812,6 +903,7 @@ function QuickIntentPanel({
   const [tokenMeta, setTokenMeta] = useState<{ symbol: string; decimals: number } | null>(null);
   const [tokenOutMeta, setTokenOutMeta] = useState<{ symbol: string; decimals: number } | null>(null);
   const [bal, setBal] = useState<bigint | null>(null);
+  const [outBal, setOutBal] = useState<bigint | null>(null);
   const [allow, setAllow] = useState<bigint | null>(null);
   const [preview, setPreview] = useState<null | { poolId: string; price18: bigint; estOut: bigint; note: string }>(null);
 
@@ -837,29 +929,39 @@ function QuickIntentPanel({
       if (!coordinator) return;
       const runner = coordinator.runner as any;
       if (!runner) return;
+      if (!ethers.isAddress(currencyIn) || !ethers.isAddress(currencyOut)) return;
       const signerAddr = await runner.getAddress?.();
       if (!signerAddr) return;
       const token = new ethers.Contract(currencyIn, ERC20Abi, runner);
       const tokenOut = new ethers.Contract(currencyOut, ERC20Abi, runner);
-      const [decimals, symbol, balance, allowance] = await Promise.all([
-        token.decimals().catch(() => 18),
-        token.symbol().catch(() => "TOKEN"),
+      const [inMeta, outMeta, balance, outBalance, allowance] = await Promise.all([
+        readTokenMeta(currencyIn, runner),
+        readTokenMeta(currencyOut, runner),
         token.balanceOf(signerAddr),
+        tokenOut.balanceOf(signerAddr),
         token.allowance(signerAddr, await coordinator.getAddress())
       ]);
-      setTokenMeta({ symbol: String(symbol), decimals: Number(decimals) });
+      setTokenMeta(inMeta);
+      setTokenOutMeta(outMeta);
       setBal(BigInt(balance));
+      setOutBal(BigInt(outBalance));
       setAllow(BigInt(allowance));
-
-      const [outDecimals, outSymbol] = await Promise.all([
-        tokenOut.decimals().catch(() => 18),
-        tokenOut.symbol().catch(() => "TOKEN_OUT")
-      ]);
-      setTokenOutMeta({ symbol: String(outSymbol), decimals: Number(outDecimals) });
     } catch {
       // Ignore
     }
   }
+
+  useEffect(() => {
+    setPreview(null);
+    setTokenMeta(null);
+    setTokenOutMeta(null);
+    setBal(null);
+    setOutBal(null);
+    setAllow(null);
+    if (!coordinator) return;
+    if (!ethers.isAddress(currencyIn) || !ethers.isAddress(currencyOut)) return;
+    void refreshAllowanceAndBalance();
+  }, [coordinator, currencyIn, currencyOut]);
 
   async function approveMax() {
     if (!coordinator) return onToast({ kind: "bad", msg: "Coordinator not configured." });
@@ -884,6 +986,14 @@ function QuickIntentPanel({
     onToast(null);
     setBusy(true);
     try {
+      if (!ethers.isAddress(currencyIn) || !ethers.isAddress(currencyOut)) {
+        throw new Error("Invalid token address.");
+      }
+      const runner = (coordinator?.runner ?? poolManager.runner) as any;
+      const [inMeta, outMeta] = await Promise.all([readTokenMeta(currencyIn, runner), readTokenMeta(currencyOut, runner)]);
+      setTokenMeta(inMeta);
+      setTokenOutMeta(outMeta);
+
       const { currency0, currency1 } = sortCurrencies(currencyIn, currencyOut);
       const pid = toBytes32PoolIdFromPoolKey({
         currency0,
@@ -896,9 +1006,9 @@ function QuickIntentPanel({
       const sqrt = BigInt(s0.sqrtPriceX96);
       const price18 = sqrtPriceX96ToPrice18(sqrt);
 
-      const amtIn = parseUnitsSafe(amountIn, tokenMeta?.decimals ?? 18);
+      const amtIn = parseUnitsSafe(amountIn, inMeta.decimals);
       let estOut = 0n;
-      let note = "Spot estimate (no slippage/fees)";
+      let note = "Spot-only estimate (ignores price impact/slippage/fees). Large trades can execute far below this.";
       if (currencyIn.toLowerCase() === currency0.toLowerCase() && currencyOut.toLowerCase() === currency1.toLowerCase()) {
         estOut = (amtIn * price18) / 10n ** 18n;
       } else if (currencyIn.toLowerCase() === currency1.toLowerCase() && currencyOut.toLowerCase() === currency0.toLowerCase()) {
@@ -920,13 +1030,18 @@ function QuickIntentPanel({
     setBusy(true);
     onToast(null);
     try {
-      const inDec = tokenMeta?.decimals ?? 18;
-      const outDec = tokenOutMeta?.decimals ?? 18;
+      if (!ethers.isAddress(currencyIn) || !ethers.isAddress(currencyOut)) {
+        throw new Error("Invalid token address.");
+      }
+      const runner = coordinator.runner as any;
+      const [inMeta, outMeta] = await Promise.all([readTokenMeta(currencyIn, runner), readTokenMeta(currencyOut, runner)]);
+      setTokenMeta(inMeta);
+      setTokenOutMeta(outMeta);
       const params = {
         currencyIn,
         currencyOut,
-        amountIn: parseUnitsSafe(amountIn, inDec),
-        amountOutMin: parseUnitsSafe(amountOutMin, outDec),
+        amountIn: parseUnitsSafe(amountIn, inMeta.decimals),
+        amountOutMin: parseUnitsSafe(amountOutMin, outMeta.decimals),
         deadline: BigInt(deadlineSec || "0"),
         mevFeeBps: Number(mevFeeBps),
         treasuryBps: Number(treasuryBps),
@@ -990,8 +1105,12 @@ function QuickIntentPanel({
         {/* Balance/Allowance Display */}
         <div className="kvs mb-4">
           <div className="kv">
-            <b>Your Balance</b>
+            <b>Input Balance</b>
             <span>{bal === null ? "—" : fmt18(bal, tokenMeta?.decimals ?? 18)} {tokenMeta?.symbol ?? ""}</span>
+          </div>
+          <div className="kv">
+            <b>Output Balance</b>
+            <span>{outBal === null ? "—" : fmt18(outBal, tokenOutMeta?.decimals ?? 18)} {tokenOutMeta?.symbol ?? ""}</span>
           </div>
           <div className="kv">
             <b>Allowance</b>
@@ -1044,7 +1163,7 @@ function QuickIntentPanel({
                 <span>{shortAddr(preview.poolId)}</span>
               </div>
               <div className="kv">
-                <b>Estimated Out</b>
+                <b>Spot Estimate (not guaranteed)</b>
                 <span>
                   {tokenOutMeta ? `${fmt18(preview.estOut, tokenOutMeta.decimals)} ${tokenOutMeta.symbol}` : String(preview.estOut)}
                 </span>

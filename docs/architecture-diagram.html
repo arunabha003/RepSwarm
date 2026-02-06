@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Swarm Protocol — Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #09090b;
+    --surface: #18181b;
+    --surface2: #1e1e23;
+    --border: #27272a;
+    --border2: #3f3f46;
+    --text: #fafafa;
+    --text2: #a1a1aa;
+    --text3: #71717a;
+
+    --blue: #3b82f6;
+    --blue-dim: #1e3a5f;
+    --indigo: #6366f1;
+    --indigo-dim: #312e81;
+    --violet: #8b5cf6;
+    --violet-dim: #3b1f7e;
+    --cyan: #22d3ee;
+    --cyan-dim: #0e4d5c;
+    --emerald: #10b981;
+    --emerald-dim: #064e3b;
+    --amber: #f59e0b;
+    --amber-dim: #5c3d0a;
+    --rose: #f43f5e;
+    --rose-dim: #5c1525;
+    --pink: #ec4899;
+    --orange: #f97316;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    padding: 40px;
+    min-height: 100vh;
+  }
+
+  h1 {
+    font-size: 42px;
+    font-weight: 800;
+    text-align: center;
+    margin-bottom: 4px;
+    letter-spacing: -1.5px;
+    background: linear-gradient(135deg, #fff 0%, var(--cyan) 50%, var(--indigo) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--text2);
+    font-size: 16px;
+    margin-bottom: 48px;
+    font-weight: 400;
+  }
+  .subtitle span { color: var(--cyan); font-weight: 600; }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-bottom: 36px;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--text2);
+  }
+  .legend-dot {
+    width: 12px; height: 12px; border-radius: 3px;
+  }
+
+  /* ── Section titles ── */
+  .section-title {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text3);
+    margin: 40px 0 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── Grid ── */
+  .grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    position: relative;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--border2); }
+  .card-accent {
+    position: absolute;
+    top: 0; left: 20px; right: 20px;
+    height: 2px;
+    border-radius: 0 0 2px 2px;
+  }
+
+  .card-title {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 2px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card-file {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text3);
+    margin-bottom: 10px;
+  }
+  .card-desc {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text2);
+  }
+  .card-desc strong { color: var(--text); font-weight: 600; }
+
+  .badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Flow Diagram ── */
+  .flow-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px;
+    margin: 16px 0;
+    overflow-x: auto;
+  }
+  .flow-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .flow-subtitle {
+    font-size: 13px;
+    color: var(--text2);
+    margin-bottom: 24px;
+  }
+
+  .flow-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    flex-wrap: nowrap;
+    min-width: max-content;
+  }
+
+  .flow-node {
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    text-align: center;
+    border: 1px solid;
+    min-width: 120px;
+  }
+  .flow-node small {
+    display: block;
+    font-weight: 400;
+    font-size: 10px;
+    opacity: 0.8;
+    margin-top: 2px;
+  }
+
+  .flow-arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 0 4px;
+    min-width: 60px;
+  }
+  .flow-arrow-line {
+    width: 40px;
+    height: 2px;
+    position: relative;
+  }
+  .flow-arrow-line::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: -4px;
+    border: 5px solid transparent;
+  }
+  .flow-arrow-label {
+    font-size: 9px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  /* ── Profit split ── */
+  .profit-bar {
+    display: flex;
+    height: 28px;
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 12px 0 6px;
+  }
+  .profit-bar div {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  /* ── ERC-8004 ── */
+  .erc-box {
+    background: linear-gradient(135deg, var(--violet-dim), var(--indigo-dim));
+    border: 1px solid var(--violet);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .erc-box .card-title { color: var(--violet); }
+
+  /* ── Key insight boxes ── */
+  .insight {
+    background: var(--surface2);
+    border-left: 3px solid;
+    border-radius: 0 8px 8px 0;
+    padding: 14px 18px;
+    margin: 8px 0;
+    font-size: 13px;
+    color: var(--text2);
+    line-height: 1.5;
+  }
+  .insight strong { color: var(--text); }
+
+  /* ── Utility ── */
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .mt-2 { margin-top: 8px; }
+  .mt-4 { margin-top: 16px; }
+  .mb-2 { margin-bottom: 8px; }
+  .mb-4 { margin-bottom: 16px; }
+  .text-center { text-align: center; }
+  .gap-8 { gap: 8px; }
+
+  .tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    margin: 2px 2px;
+  }
+
+  /* ── Step list ── */
+  .steps { list-style: none; counter-reset: step; }
+  .steps li {
+    counter-increment: step;
+    padding: 6px 0 6px 32px;
+    position: relative;
+    font-size: 13px;
+    color: var(--text2);
+    line-height: 1.5;
+  }
+  .steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0; top: 6px;
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    .grid-3, .grid-4 { grid-template-columns: 1fr 1fr; }
+    .flow-row { flex-wrap: wrap; }
+  }
+  @media (max-width: 600px) {
+    body { padding: 16px; }
+    .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  }
+
+  /* ── Print-friendly ── */
+  @media print {
+    body { background: #fff; color: #000; }
+    .card { border-color: #ddd; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════ HEADER ═══════════════════════ -->
+<h1>🐝 Swarm Protocol</h1>
+<p class="subtitle">MEV-Aware Intent Routing on <span>Uniswap v4</span> — powered by on-chain AI agents &amp; <span>ERC-8004</span> reputation</p>
+
+<!-- ═══════════════════════ LEGEND ═══════════════════════ -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div> Hook / Core</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--emerald)"></div> Hook Agents</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div> Intent / Routing</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--rose)"></div> Backrun / MEV</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--violet)"></div> ERC-8004 Identity</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div> External / Infra</div>
+</div>
+
+<!-- ═══════════════════════ TL;DR ═══════════════════════ -->
+<div class="card" style="border-color: var(--indigo); margin-bottom: 32px;">
+  <div class="card-accent" style="background: linear-gradient(90deg, var(--cyan), var(--indigo), var(--violet));"></div>
+  <div class="card-title" style="font-size:17px; margin-bottom:10px;">💡 What is Swarm?</div>
+  <div class="card-desc" style="font-size:14px;">
+    Swarm is a <strong>Uniswap v4 hook</strong> that protects LPs from MEV by running <strong>on-chain AI agents</strong> on every swap.
+    Three agents analyze each trade in real-time: one adjusts fees dynamically, one captures arbitrage for LPs, and one detects backrun opportunities.
+    Users can also submit <strong>MEV-protected intents</strong> — off-chain route agents compete to find the best execution path,
+    and their reputation is tracked on-chain via <strong>ERC-8004 (Trustless Agents)</strong>.
+    Captured profits are <strong>donated back to LPs</strong>, turning MEV from an LP tax into LP income.
+  </div>
+</div>
+
+<!-- ═══════════════════════ TWO PLANES ═══════════════════════ -->
+<div class="section-title">Two Execution Planes</div>
+<div class="grid grid-2 mb-4">
+  <div class="card">
+    <div class="card-accent" style="background:var(--blue)"></div>
+    <div class="card-title">⚡ Swap Plane <span class="badge" style="background:var(--blue-dim);color:var(--blue)">Synchronous</span></div>
+    <div class="card-desc mt-2">
+      Runs <strong>inside every swap</strong> via Uniswap v4 hook callbacks (<code>beforeSwap</code> / <code>afterSwap</code>).
+      Three on-chain agents analyze the trade and the hook applies their recommendations atomically.
+      <strong>Zero off-chain dependency — always works.</strong>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-accent" style="background:var(--amber)"></div>
+    <div class="card-title">🧭 Intent Plane <span class="badge" style="background:var(--amber-dim);color:var(--amber)">Async</span></div>
+    <div class="card-desc mt-2">
+      Users submit <strong>swap intents</strong> to the Coordinator. Route agents <strong>compete off-chain</strong> to propose the best candidate path.
+      The Coordinator selects the winner, executes through v4, and the swap still goes through the hook (both planes combine).
+      <strong>ERC-8004 reputation gates who can propose.</strong>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ CORE CONTRACTS ═══════════════════════ -->
+<div class="section-title">Core Contracts</div>
+
+<!-- Row 1: Hook + Executor -->
+<div class="grid grid-2 mb-2">
+  <div class="card">
+    <div class="card-accent" style="background:var(--blue)"></div>
+    <div class="card-title" style="color:var(--blue)">🪝 SwarmHook</div>
+    <div class="card-file">src/hooks/SwarmHook.sol</div>
+    <div class="card-desc">
+      The <strong>Uniswap v4 hook</strong> attached to the pool. It's the brain of the protocol:
+      <ul class="steps mt-2" style="--c:var(--blue)">
+        <li style="color:var(--text2)"><strong>beforeSwap</strong> — builds swap context, calls AgentExecutor, applies pre-swap capture &amp; dynamic fee</li>
+        <li style="color:var(--text2)"><strong>afterSwap</strong> — calls AgentExecutor again, records backrun opportunities, skims MEV fee from hookData</li>
+        <li style="color:var(--text2)"><strong>Profit routing</strong> — sends captured value to LPFeeAccumulator for LP donation</li>
+      </ul>
+    </div>
+    <div class="insight mt-2" style="border-color:var(--blue)">
+      <strong>Key insight:</strong> The hook never calls external contracts that can block a swap. Agent failures trigger graceful failover, not reverts.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-accent" style="background:var(--blue)"></div>
+    <div class="card-title" style="color:var(--blue)">🎛️ AgentExecutor</div>
+    <div class="card-file">src/agents/AgentExecutor.sol</div>
+    <div class="card-desc">
+      The <strong>agent manager</strong> called by the hook. Manages all three agent types:
+      <ul class="steps mt-2" style="--c:var(--blue)">
+        <li style="color:var(--text2)"><strong>Agent registry</strong> — stores current + backup agent per type (ARB / FEE / BACKRUN)</li>
+        <li style="color:var(--text2)"><strong>Failover</strong> — if primary agent reverts, automatically tries backup agent</li>
+        <li style="color:var(--text2)"><strong>Stats tracking</strong> — call count, last result, gas used per agent</li>
+        <li style="color:var(--text2)"><strong>Reputation switching</strong> — admin can hot-swap agents based on ERC-8004 scores (off-path, never inside swaps)</li>
+      </ul>
+    </div>
+    <div class="insight mt-2" style="border-color:var(--blue)">
+      <strong>Safety:</strong> Reputation checks are off-path — never called during a swap — so oracle failures can't brick trades.
+    </div>
+  </div>
+</div>
+
+<!-- Row 2: Three agents -->
+<div class="section-title">Hook Agents (On-Chain, Per-Swap)</div>
+<div class="grid grid-3 mb-2">
+  <div class="card">
+    <div class="card-accent" style="background:var(--emerald)"></div>
+    <div class="card-title" style="color:var(--emerald)">📊 ArbitrageAgent</div>
+    <div class="card-file">src/agents/ArbitrageAgent.sol</div>
+    <div class="card-desc">
+      Compares <strong>pool price vs. Chainlink oracle price</strong>.
+      If the pool is mispriced, recommends a <strong>pre-swap capture</strong> amount — the hook takes a portion of the trade to correct the price before the swap, capturing value that would otherwise go to arbitrageurs.
+    </div>
+    <div class="tag mt-2" style="background:var(--emerald-dim);color:var(--emerald)">beforeSwap</div>
+  </div>
+
+  <div class="card">
+    <div class="card-accent" style="background:var(--emerald)"></div>
+    <div class="card-title" style="color:var(--emerald)">⚙️ DynamicFeeAgent</div>
+    <div class="card-file">src/agents/DynamicFeeAgent.sol</div>
+    <div class="card-desc">
+      Analyzes swap context (size, direction, market conditions) and recommends a <strong>dynamic fee override</strong> using Uniswap v4's dynamic fee feature.
+      Higher fees during volatile periods, lower fees when markets are calm — <strong>adaptive LP protection</strong>.
+    </div>
+    <div class="tag mt-2" style="background:var(--emerald-dim);color:var(--emerald)">beforeSwap</div>
+  </div>
+
+  <div class="card">
+    <div class="card-accent" style="background:var(--emerald)"></div>
+    <div class="card-title" style="color:var(--emerald)">🔍 BackrunAgent</div>
+    <div class="card-file">src/agents/BackrunAgent.sol</div>
+    <div class="card-desc">
+      Runs <strong>after every swap</strong>. Checks if the trade created a price dislocation (pool price vs oracle price gap).
+      If so, signals the hook to <strong>record a backrun opportunity</strong> in FlashLoanBackrunner for later execution.
+    </div>
+    <div class="tag mt-2" style="background:var(--emerald-dim);color:var(--emerald)">afterSwap</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SWAP FLOW ═══════════════════════ -->
+<div class="section-title">Flow A — Swap Plane (Every Swap)</div>
+<div class="flow-container">
+  <div class="flow-subtitle">What happens when any swap goes through the hooked pool</div>
+  <div class="flow-row">
+    <div class="flow-node" style="background:var(--surface2);border-color:var(--text3);color:var(--text)">
+      👤 Swapper
+      <small>sends swap tx</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--text3)"></div>
+      <div class="flow-arrow-label" style="color:var(--text3)">swap()</div>
+    </div>
+    <div class="flow-node" style="background:var(--cyan-dim);border-color:var(--cyan);color:var(--cyan)">
+      🏗️ PoolManager
+      <small>Uniswap v4</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--blue)"></div>
+      <div class="flow-arrow-label" style="color:var(--blue)">beforeSwap()</div>
+    </div>
+    <div class="flow-node" style="background:var(--blue-dim);border-color:var(--blue);color:var(--blue)">
+      🪝 SwarmHook
+      <small>builds SwapContext</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--blue)"></div>
+      <div class="flow-arrow-label" style="color:var(--blue)">processBeforeSwap()</div>
+    </div>
+    <div class="flow-node" style="background:var(--blue-dim);border-color:var(--blue);color:var(--blue)">
+      🎛️ AgentExecutor
+      <small>routes to agents</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--emerald)"></div>
+      <div class="flow-arrow-label" style="color:var(--emerald)">execute()</div>
+    </div>
+    <div class="flow-node" style="background:var(--emerald-dim);border-color:var(--emerald);color:var(--emerald)">
+      📊 ArbAgent
+      <small>+ ⚙️ FeeAgent</small>
+    </div>
+  </div>
+
+  <div class="flow-row mt-4">
+    <div class="flow-node" style="background:var(--emerald-dim);border-color:var(--emerald);color:var(--emerald)">
+      🔍 BackrunAgent
+      <small>detects dislocation</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--emerald)"></div>
+      <div class="flow-arrow-label" style="color:var(--emerald)">signal</div>
+    </div>
+    <div class="flow-node" style="background:var(--blue-dim);border-color:var(--blue);color:var(--blue)">
+      🪝 SwarmHook
+      <small>afterSwap()</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--rose)"></div>
+      <div class="flow-arrow-label" style="color:var(--rose)">record()</div>
+    </div>
+    <div class="flow-node" style="background:var(--rose-dim);border-color:var(--rose);color:var(--rose)">
+      ⚡ FlashLoanBackrunner
+      <small>stores opportunity</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--emerald)"></div>
+      <div class="flow-arrow-label" style="color:var(--emerald)">accumulate</div>
+    </div>
+    <div class="flow-node" style="background:var(--emerald-dim);border-color:var(--emerald);color:var(--emerald)">
+      💰 LPFeeAccumulator
+      <small>→ donate to LPs</small>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ INTENT FLOW ═══════════════════════ -->
+<div class="section-title">Flow B — Intent Plane (MEV-Protected Swaps)</div>
+<div class="flow-container">
+  <div class="flow-subtitle">How users submit intents and route agents compete to serve them</div>
+  <div class="flow-row">
+    <div class="flow-node" style="background:var(--surface2);border-color:var(--text3);color:var(--text)">
+      👤 User
+      <small>creates intent</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--amber)"></div>
+      <div class="flow-arrow-label" style="color:var(--amber)">createIntent()</div>
+    </div>
+    <div class="flow-node" style="background:var(--amber-dim);border-color:var(--amber);color:var(--amber)">
+      🧭 Coordinator
+      <small>stores intent</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--violet)"></div>
+      <div class="flow-arrow-label" style="color:var(--violet)">submitProposal()</div>
+    </div>
+    <div class="flow-node" style="background:var(--violet-dim);border-color:var(--violet);color:var(--violet)">
+      🤖 Route Agents
+      <small>compete (ERC-8004)</small>
+    </div>
+  </div>
+
+  <div class="flow-row mt-4">
+    <div class="flow-node" style="background:var(--surface2);border-color:var(--text3);color:var(--text)">
+      👤 User
+      <small>triggers execution</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--amber)"></div>
+      <div class="flow-arrow-label" style="color:var(--amber)">executeIntent()</div>
+    </div>
+    <div class="flow-node" style="background:var(--amber-dim);border-color:var(--amber);color:var(--amber)">
+      🧭 Coordinator
+      <small>picks best proposal</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--blue)"></div>
+      <div class="flow-arrow-label" style="color:var(--blue)">v4 router + hookData</div>
+    </div>
+    <div class="flow-node" style="background:var(--cyan-dim);border-color:var(--cyan);color:var(--cyan)">
+      🏗️ PoolManager
+      <small>swap executes</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--blue)"></div>
+      <div class="flow-arrow-label" style="color:var(--blue)">hook callbacks</div>
+    </div>
+    <div class="flow-node" style="background:var(--blue-dim);border-color:var(--blue);color:var(--blue)">
+      🪝 SwarmHook
+      <small>agents run (Plane A)</small>
+    </div>
+  </div>
+
+  <div class="insight mt-4" style="border-color:var(--amber)">
+    <strong>Both planes combine:</strong> Intent swaps go through the same hooked pool, so the hook agents (arbitrage, fee, backrun) still run on every intent execution. The intent plane adds <em>route optimization + MEV protection</em> on top.
+  </div>
+</div>
+
+<!-- ═══════════════════════ BACKRUN FLOW ═══════════════════════ -->
+<div class="section-title">Flow C — Backrun Execution (Profit Capture)</div>
+<div class="flow-container">
+  <div class="flow-subtitle">How detected opportunities get executed and profits flow back to LPs</div>
+  <div class="flow-row">
+    <div class="flow-node" style="background:var(--rose-dim);border-color:var(--rose);color:var(--rose)">
+      ⚡ FlashLoanBackrunner
+      <small>has pending opportunity</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--text3)"></div>
+      <div class="flow-arrow-label" style="color:var(--text3)">event emitted</div>
+    </div>
+    <div class="flow-node" style="background:var(--surface2);border-color:var(--text3);color:var(--text)">
+      🤖 Keeper / Executor
+      <small>watches events</small>
+    </div>
+    <div class="flow-arrow">
+      <div class="flow-arrow-line" style="background:var(--rose)"></div>
+      <div class="flow-arrow-label" style="color:var(--rose)">execute()</div>
+    </div>
+    <div class="flow-node" style="background:var(--rose-dim);border-color:var(--rose);color:var(--rose)">
+      ⚡ FlashLoanBackrunner
+      <small>Aave flashloan or capital</small>
+    </div>
+  </div>
+
+  <div class="mt-4 mb-2" style="font-size:13px;color:var(--text2);font-weight:600;">Profit Distribution:</div>
+  <div class="profit-bar">
+    <div style="width:80%;background:var(--emerald);color:#000">80% → LPs (via LPFeeAccumulator)</div>
+    <div style="width:20%;background:var(--amber);color:#000">20% → Keeper</div>
+  </div>
+  <div style="font-size:11px;color:var(--text3);margin-top:4px;">
+    Two execution modes: <strong style="color:var(--text2)">Flashloan</strong> (Aave v3 — no capital needed) or <strong style="color:var(--text2)">Capital</strong> (keeper supplies tokens directly)
+  </div>
+</div>
+
+<!-- ═══════════════════════ BACKRUN + LP CONTRACTS ═══════════════════════ -->
+<div class="section-title">MEV Capture & LP Value Return</div>
+<div class="grid grid-3 mb-2">
+  <div class="card">
+    <div class="card-accent" style="background:var(--rose)"></div>
+    <div class="card-title" style="color:var(--rose)">⚡ FlashLoanBackrunner</div>
+    <div class="card-file">src/backrun/FlashLoanBackrunner.sol</div>
+    <div class="card-desc">
+      Stores one <strong>pending backrun opportunity per pool</strong>. Executes via Aave v3 flashloan or keeper-supplied capital.
+      Splits profit 80/20 (LPs/keeper). Emits events for keeper monitoring.
+    </div>
+    <div class="tag mt-2" style="background:var(--rose-dim);color:var(--rose)">Aave v3 Flash</div>
+    <div class="tag" style="background:var(--rose-dim);color:var(--rose)">Capital Mode</div>
+  </div>
+
+  <div class="card">
+    <div class="card-accent" style="background:var(--rose)"></div>
+    <div class="card-title" style="color:var(--rose)">🤖 FlashBackrunExecutorAgent</div>
+    <div class="card-file">src/agents/FlashBackrunExecutorAgent.sol</div>
+    <div class="card-desc">
+      <strong>Permissionless on-chain executor.</strong> Anyone can call <code>execute(poolId)</code> — no keeper needed.
+      Routes bounty through the agent contract. Alternative to off-chain keeper for backrun execution.
+    </div>
+    <div class="tag mt-2" style="background:var(--rose-dim);color:var(--rose)">Permissionless</div>
+  </div>
+
+  <div class="card">
+    <div class="card-accent" style="background:var(--emerald)"></div>
+    <div class="card-title" style="color:var(--emerald)">💰 LPFeeAccumulator</div>
+    <div class="card-file">src/LPFeeAccumulator.sol</div>
+    <div class="card-desc">
+      Receives profits from backruns and MEV captures. <strong>Accumulates per pool/currency</strong> until thresholds are met.
+      Anyone can call <code>donateToLPs(poolId)</code> to distribute accumulated fees back to liquidity providers via v4's donate mechanism.
+    </div>
+    <div class="tag mt-2" style="background:var(--emerald-dim);color:var(--emerald)">LP Donation</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ INTENT + ROUTE ═══════════════════════ -->
+<div class="section-title">Intent Routing & Coordination</div>
+<div class="grid grid-3 mb-2">
+  <div class="card">
+    <div class="card-accent" style="background:var(--amber)"></div>
+    <div class="card-title" style="color:var(--amber)">🧭 SwarmCoordinator</div>
+    <div class="card-file">src/SwarmCoordinator.sol</div>
+    <div class="card-desc">
+      The <strong>intent router</strong>. Users submit intents with candidate paths, route agents submit proposals (with scores),
+      coordinator selects the best and executes through v4. Attaches <code>SwarmHookData</code> so the hook applies MEV fee logic.
+      <strong>Writes ERC-8004 reputation feedback</strong> on successful execution.
+    </div>
+    <div class="tag mt-2" style="background:var(--amber-dim);color:var(--amber)">Intent Mgmt</div>
+    <div class="tag" style="background:var(--violet-dim);color:var(--violet)">ERC-8004 Gating</div>
+  </div>
+
+  <div class="card">
+    <div class="card-accent" style="background:var(--amber)"></div>
+    <div class="card-title" style="color:var(--amber)">🤖 SimpleRouteAgent</div>
+    <div class="card-file">src/erc8004/SimpleRouteAgent.sol</div>
+    <div class="card-desc">
+      A minimal <strong>on-chain route agent</strong>. Submits coordinator proposals with configurable defaults.
+      Has an ERC-8004 identity for reputation tracking. Can be replaced by more sophisticated off-chain route agents.
+    </div>
+    <div class="tag mt-2" style="background:var(--amber-dim);color:var(--amber)">Route Agent</div>
+    <div class="tag" style="background:var(--violet-dim);color:var(--violet)">ERC-8004 ID</div>
+  </div>
+
+  <div class="card">
+    <div class="card-accent" style="background:var(--cyan)"></div>
+    <div class="card-title" style="color:var(--cyan)">🔮 OracleRegistry</div>
+    <div class="card-file">src/oracles/OracleRegistry.sol</div>
+    <div class="card-desc">
+      Maps token pairs to <strong>Chainlink price feeds</strong>. Exposes <code>getLatestPrice(base, quote)</code> normalized to 1e18.
+      Used by ArbitrageAgent and BackrunAgent to compare pool price vs. fair market price.
+    </div>
+    <div class="tag mt-2" style="background:var(--cyan-dim);color:var(--cyan)">Chainlink</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ ERC-8004 ═══════════════════════ -->
+<div class="section-title">ERC-8004 — Trustless Agent Identity & Reputation</div>
+<div class="erc-box">
+  <div class="card-title" style="font-size:17px;margin-bottom:10px;">🆔 ERC-8004 Integration</div>
+  <div class="card-desc" style="font-size:14px;">
+    <strong>ERC-8004 (Trustless Agents)</strong> is a proposed standard for discovering and trusting AI agents on-chain.
+    Swarm uses all three registries:
+  </div>
+
+  <div class="grid grid-3 mt-4" style="gap:12px;">
+    <div class="card" style="background:rgba(139,92,246,0.1);border-color:rgba(139,92,246,0.3);">
+      <div class="card-title" style="color:var(--violet);font-size:14px;">🪪 Identity Registry</div>
+      <div class="card-desc mt-2" style="font-size:12px;">
+        Each agent (hook agents + route agents) gets an <strong>ERC-721 NFT</strong> that serves as its on-chain identity.
+        Links to a registration file describing the agent's capabilities, pricing, and interaction methods.
+      </div>
+    </div>
+    <div class="card" style="background:rgba(139,92,246,0.1);border-color:rgba(139,92,246,0.3);">
+      <div class="card-title" style="color:var(--violet);font-size:14px;">⭐ Reputation Registry</div>
+      <div class="card-desc mt-2" style="font-size:12px;">
+        The Coordinator writes <strong>positive feedback (+1 WAD)</strong> after successful intent execution.
+        AgentExecutor can use reputation scores to <strong>hot-swap underperforming agents</strong>.
+        Route agents need minimum reputation to submit proposals (configurable).
+      </div>
+    </div>
+    <div class="card" style="background:rgba(139,92,246,0.1);border-color:rgba(139,92,246,0.3);">
+      <div class="card-title" style="color:var(--violet);font-size:14px;">✅ Validation Registry</div>
+      <div class="card-desc mt-2" style="font-size:12px;">
+        Generic hooks for requesting independent verification of agent actions.
+        Supports stakers re-running jobs, zkML verifiers, TEE oracles, and trusted judges.
+        <strong>Extensible trust model</strong> — security scales with value at risk.
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt-4" style="background:rgba(139,92,246,0.05);border-color:rgba(139,92,246,0.2);">
+    <div class="card-title" style="color:var(--violet);font-size:14px;">📋 SwarmAgentRegistry</div>
+    <div class="card-file">src/erc8004/SwarmAgentRegistry.sol</div>
+    <div class="card-desc" style="font-size:12px;">
+      Helper contract for <strong>minting and tracking ERC-8004 identities</strong>.
+      Registers agent contracts with official IdentityRegistry IDs, stores metadata.
+      Used to link ArbitrageAgent (ID 949), DynamicFeeAgent (ID 950), BackrunAgent (ID 951), and SimpleRouteAgent (ID 952) to their on-chain identities.
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ AGENT SWITCHING ═══════════════════════ -->
+<div class="section-title">Agent Switching Model</div>
+<div class="grid grid-3 mb-4">
+  <div class="card">
+    <div class="card-accent" style="background:var(--text3)"></div>
+    <div class="card-title">🔧 Manual Switching</div>
+    <div class="card-desc mt-2">
+      Admin calls <code>registerAgent(type, newAgent)</code> on AgentExecutor. Immediate hot-swap.
+      <strong>For upgrades and emergency replacements.</strong>
+    </div>
+    <div class="tag mt-2" style="background:var(--surface2);color:var(--text2)">Admin Only</div>
+  </div>
+  <div class="card">
+    <div class="card-accent" style="background:var(--amber)"></div>
+    <div class="card-title">🔄 Backup Failover</div>
+    <div class="card-desc mt-2">
+      If the primary agent <strong>reverts during a swap</strong>, AgentExecutor automatically tries the configured backup agent.
+      <strong>Zero downtime, no admin intervention needed.</strong>
+    </div>
+    <div class="tag mt-2" style="background:var(--amber-dim);color:var(--amber)">Runtime / Automatic</div>
+  </div>
+  <div class="card">
+    <div class="card-accent" style="background:var(--violet)"></div>
+    <div class="card-title">📉 Reputation Switching</div>
+    <div class="card-desc mt-2">
+      Admin configures ERC-8004 reputation thresholds. Calls <code>checkAndSwitchAgentIfBelowThreshold()</code>.
+      <strong>Off-path</strong> — never inside swaps — to avoid oracle failure cascades.
+    </div>
+    <div class="tag mt-2" style="background:var(--violet-dim);color:var(--violet)">ERC-8004 Powered</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ OFF-CHAIN ═══════════════════════ -->
+<div class="section-title">Off-Chain Components</div>
+<div class="grid grid-3 mb-4">
+  <div class="card">
+    <div class="card-accent" style="background:var(--cyan)"></div>
+    <div class="card-title" style="color:var(--cyan)">🖥️ Frontend (React)</div>
+    <div class="card-file">frontend/src/ui/App.tsx</div>
+    <div class="card-desc">
+      Full-featured <strong>testing dashboard</strong>. Connect wallet, create intents, submit proposals, execute backruns, manage agents, view real-time pool data and agent stats.
+      Talks directly to contracts via ethers.js.
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-accent" style="background:var(--cyan)"></div>
+    <div class="card-title" style="color:var(--cyan)">🤖 Backrun Keeper</div>
+    <div class="card-file">keeper/backrun-keeper.js</div>
+    <div class="card-desc">
+      Node.js script that <strong>watches for BackrunOpportunityDetected events</strong> and executes backruns via FlashLoanBackrunner.
+      Earns 20% of captured profit as bounty. Can use flashloan or capital mode.
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-accent" style="background:var(--cyan)"></div>
+    <div class="card-title" style="color:var(--cyan)">📊 Score Keeper</div>
+    <div class="card-file">keeper/agent-score-keeper.js</div>
+    <div class="card-desc">
+      Monitors agent performance and <strong>writes ERC-8004 reputation scores</strong> on-chain.
+      Can trigger reputation-based agent switching when scores drop below thresholds.
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ FULL SYSTEM MAP ═══════════════════════ -->
+<div class="section-title">Complete System Map</div>
+<div class="flow-container" style="background: linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);">
+  <pre style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.7;color:var(--text2);overflow-x:auto;white-space:pre;">
+<span style="color:var(--text)">                                    ┌──────────────────────────────────────────────────┐</span>
+<span style="color:var(--text)">                                    │           👤  USER  (Frontend / Wallet)           │</span>
+<span style="color:var(--text)">                                    └─────────┬────────────────────────┬───────────────┘</span>
+                                              │                        │
+                               <span style="color:var(--amber)">createIntent()</span>  │                        │  <span style="color:var(--blue)">direct swap</span>
+                                              ▼                        ▼
+<span style="color:var(--amber)">              ┌────────────────────────────────────────────┐    ┌──────────────────────────┐</span>
+<span style="color:var(--amber)">              │        🧭  SWARM COORDINATOR                │    │  🏗️  UNISWAP V4           │</span>
+<span style="color:var(--amber)">              │  Intent mgmt · Route selection · hookData   │───▶│     POOL MANAGER          │</span>
+<span style="color:var(--amber)">              │  ERC-8004 gating · Reputation feedback      │    │                          │</span>
+<span style="color:var(--amber)">              └──────────┬─────────────────────────────────┘    └────────────┬─────────────┘</span>
+                         │                                                   │
+              <span style="color:var(--violet)">submitProposal()</span>                                  <span style="color:var(--blue)">beforeSwap() / afterSwap()</span>
+                         ▼                                                   ▼
+<span style="color:var(--violet)">              ┌────────────────────┐                           ┌──────────────────────────┐</span>
+<span style="color:var(--violet)">              │  🤖  ROUTE AGENTS   │                           │  🪝  SWARM HOOK           │</span>
+<span style="color:var(--violet)">              │  SimpleRouteAgent   │                           │  Pre-swap capture         │</span>
+<span style="color:var(--violet)">              │  (ERC-8004 ID)     │                           │  Dynamic fee override     │</span>
+<span style="color:var(--violet)">              └────────────────────┘                           │  MEV fee skim             │</span>
+                                                                │  Backrun recording        │
+<span style="color:var(--violet)">              ┌────────────────────────────┐                    └──────────┬───────────────┘</span>
+<span style="color:var(--violet)">              │  🆔  ERC-8004 REGISTRIES    │                               │</span>
+<span style="color:var(--violet)">              │  Identity · Reputation      │                    <span style="color:var(--blue)">processBeforeSwap()</span> / <span style="color:var(--blue)">processAfterSwap()</span>
+<span style="color:var(--violet)">              │  Validation                 │                               │</span>
+<span style="color:var(--violet)">              │  SwarmAgentRegistry         │                               ▼</span>
+<span style="color:var(--violet)">              └────────────────────────────┘              ┌────────────────────────────────────┐</span>
+                                                        │  <span style="color:var(--blue)">🎛️  AGENT EXECUTOR</span>                    │
+                                                        │  Manages 3 agent types:              │
+                                                        │                                      │
+                                                        │  ┌──────────┐┌──────────┐┌──────────┐│
+                                                        │  │<span style="color:var(--emerald)">📊 ARB    </span>││<span style="color:var(--emerald)">⚙️ FEE    </span>││<span style="color:var(--emerald)">🔍 BACKRUN</span>││
+                                                        │  │<span style="color:var(--emerald)">Agent    </span>││<span style="color:var(--emerald)">Agent    </span>││<span style="color:var(--emerald)">Agent    </span>││
+                                                        │  └──────────┘└──────────┘└──────────┘│
+                                                        │  + Failover · Stats · Rep switching   │
+                                                        └──────────────────┬───────────────────┘
+                                                                           │
+                                                                  <span style="color:var(--rose)">record opportunity</span>
+                                                                           ▼
+                                                        ┌──────────────────────────────────────┐
+                                                        │  <span style="color:var(--rose)">⚡ FLASH LOAN BACKRUNNER</span>                │
+                                                        │  Pending opportunities · Aave flash   │
+                                                        │  80% → LPs  ·  20% → Keeper           │
+                                                        └──────────┬─────────────┬─────────────┘
+                                                                   │             │
+                                                          <span style="color:var(--emerald)">accumulate</span>         <span style="color:var(--amber)">bounty</span>
+                                                                   ▼             ▼
+                                                        ┌─────────────────┐ ┌──────────┐
+                                                        │ <span style="color:var(--emerald)">💰 LP FEE       </span> │ │<span style="color:var(--amber)"> 🤖 KEEPER</span> │
+                                                        │ <span style="color:var(--emerald)">  ACCUMULATOR   </span> │ │<span style="color:var(--amber)">          </span> │
+                                                        │ <span style="color:var(--emerald)"> donate to LPs  </span> │ │<span style="color:var(--amber)">  (20%)   </span> │
+                                                        └─────────────────┘ └──────────┘
+                                                                   │
+                                                          <span style="color:var(--emerald)">donateToLPs()</span>
+                                                                   ▼
+                                                        ┌─────────────────────┐
+                                                        │ <span style="color:var(--cyan)">🏗️ Uniswap v4 Pool </span>  │
+                                                        │ <span style="color:var(--cyan)">  LP positions get  </span>  │
+                                                        │ <span style="color:var(--cyan)">  fee donations      </span> │
+                                                        └─────────────────────┘
+
+  <span style="color:var(--cyan)">                  ┌──────────────────┐</span>
+  <span style="color:var(--cyan)">                  │  🔮 ORACLE       │   Chainlink price feeds</span>
+  <span style="color:var(--cyan)">                  │    REGISTRY      │   Used by ARB + BACKRUN agents</span>
+  <span style="color:var(--cyan)">                  │                  │   to compare pool vs fair price</span>
+  <span style="color:var(--cyan)">                  └──────────────────┘</span>
+  </pre>
+</div>
+
+<!-- ═══════════════════════ KEY INNOVATIONS ═══════════════════════ -->
+<div class="section-title">Key Innovations</div>
+<div class="grid grid-2 mb-4">
+  <div class="card" style="border-color:var(--emerald);">
+    <div class="card-title">🛡️ MEV → LP Income</div>
+    <div class="card-desc mt-2">
+      Traditional DEXs leak value to MEV bots. Swarm <strong>captures that value on-chain</strong> through hook agents and <strong>returns it to liquidity providers</strong> via fee donations.
+      LPs earn more, MEV bots earn less.
+    </div>
+  </div>
+  <div class="card" style="border-color:var(--violet);">
+    <div class="card-title">🤖 ERC-8004 Agent Economy</div>
+    <div class="card-desc mt-2">
+      First production use of <strong>ERC-8004 (Trustless Agents)</strong>. Agents have on-chain identities, build reputation through performance, and can be permissionlessly replaced based on reputation scores. <strong>Open agent marketplace.</strong>
+    </div>
+  </div>
+  <div class="card" style="border-color:var(--blue);">
+    <div class="card-title">⚡ Zero Off-Chain Dependency</div>
+    <div class="card-desc mt-2">
+      The swap plane runs <strong>entirely on-chain</strong> inside Uniswap v4 hooks. No oracle calls can block a swap, no keeper is required for basic protection. Agent failures trigger graceful failover, <strong>never reverts</strong>.
+    </div>
+  </div>
+  <div class="card" style="border-color:var(--amber);">
+    <div class="card-title">🧭 Intent-Based MEV Protection</div>
+    <div class="card-desc mt-2">
+      Users submit intents instead of raw swaps. Route agents compete to find the best execution path.
+      The Coordinator attaches MEV protection data (<code>hookData</code>) so the hook can apply specialized fee logic.
+      <strong>Users get better prices, agents earn reputation.</strong>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ TECH STACK ═══════════════════════ -->
+<div class="section-title">Tech Stack</div>
+<div class="grid grid-4 mb-4">
+  <div class="card text-center">
+    <div style="font-size:28px;margin-bottom:8px;">⟠</div>
+    <div class="card-title" style="justify-content:center;font-size:13px;">Uniswap v4</div>
+    <div class="card-desc" style="font-size:11px;">Hooks · PoolManager · Dynamic Fees</div>
+  </div>
+  <div class="card text-center">
+    <div style="font-size:28px;margin-bottom:8px;">🔗</div>
+    <div class="card-title" style="justify-content:center;font-size:13px;">Chainlink</div>
+    <div class="card-desc" style="font-size:11px;">Price feeds for fair value oracle</div>
+  </div>
+  <div class="card text-center">
+    <div style="font-size:28px;margin-bottom:8px;">💜</div>
+    <div class="card-title" style="justify-content:center;font-size:13px;">Aave v3</div>
+    <div class="card-desc" style="font-size:11px;">Flash loans for capital-free backruns</div>
+  </div>
+  <div class="card text-center">
+    <div style="font-size:28px;margin-bottom:8px;">🆔</div>
+    <div class="card-title" style="justify-content:center;font-size:13px;">ERC-8004</div>
+    <div class="card-desc" style="font-size:11px;">Agent identity · Reputation · Validation</div>
+  </div>
+</div>
+
+<div style="text-align:center;padding:40px 0 20px;color:var(--text3);font-size:12px;">
+  Built at ETHGlobal HackMoney · 2026
+</div>
+
+</body>
+</html>
