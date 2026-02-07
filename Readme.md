@@ -1,6 +1,6 @@
-# Swarm Protocol (Uniswap v4 Hook + AI Agents)
+# SwarmRep Protocol (Uniswap v4 Hook + AI Agents)
 
-Swarm is an on-chain MEV-protection + value-redistribution protocol built on **Uniswap v4 hooks**.
+SwarmRep is an on-chain MEV-protection + value-redistribution protocol built on **Uniswap v4 hooks**.
 
 What it does:
 
@@ -30,6 +30,12 @@ In short:
 2. Fund the deployer with DAI on the fork.
 3. Deploy using `script/DeployAnvilSepoliaFork.s.sol` (creates pools + liquidity, wires everything).
 4. Run the frontend in `frontend/` and test the full flow.
+
+Current protocol status in this repo:
+
+- No mocked contracts in the core protocol path (`src/`) for Sepolia/fork E2E.
+- Backrun execution is on-chain and permissionless via `FlashBackrunExecutorAgent`.
+- No dedicated keeper or scoring server is required.
 
 ## Architecture (One-Liners)
 
@@ -74,7 +80,7 @@ Backrun execution is intentionally a separate transaction so swaps never revert 
 
 - Manual: execute from the frontend `Backrun` tab.
 - Automatic (on-chain): call `FlashBackrunExecutorAgent.execute(poolId)` permissionlessly.
-- Automatic (off-chain optional): run the keeper (`keeper/`) to listen for `BackrunOpportunityDetected` and execute immediately.
+- Optional external automation: any bot/EOA can watch `BackrunOpportunityDetected` and call the same execute path.
 
 ## ERC-8004 (Where It Fits)
 
@@ -87,9 +93,8 @@ ERC-8004 is used in two places:
   - Hook agents can be linked to ERC-8004 identity IDs (for “official agent identities”).
   - Admin can configure reputation threshold switching in `AgentExecutor` (off-path, never inside swaps).
 
-Note: a reputation threshold only matters if someone is actually writing reputation feedback. `AgentExecutor` now supports
-optional on-chain scoring (`setOnchainScoringConfig`) to post +1/-1 feedback directly, and the off-chain scorer in
-`keeper/` remains optional.
+Note: a reputation threshold only matters if someone is writing reputation feedback. `AgentExecutor` supports
+optional on-chain scoring (`setOnchainScoringConfig`) to post +1/-1 feedback directly. An external scoring service is optional.
 
 ## Tests
 
