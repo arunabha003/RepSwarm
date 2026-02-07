@@ -422,15 +422,17 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
         uint256 currentPrice = _sqrtPriceToPrice(sqrtPriceX96);
 
-        // Check if price has moved back already
+        // Check if price has moved back already (no opportunity left)
         if (opp.zeroForOne) {
-            // We want price to go up (closer to target)
-            if (currentPrice >= opp.targetPrice) {
+            // Backrun sells token0 to push price DOWN toward target.
+            // Profitable only while current price is ABOVE target.
+            if (currentPrice <= opp.targetPrice) {
                 return (false, 0);
             }
         } else {
-            // We want price to go down
-            if (currentPrice <= opp.targetPrice) {
+            // Backrun sells token1 to push price UP toward target.
+            // Profitable only while current price is BELOW target.
+            if (currentPrice >= opp.targetPrice) {
                 return (false, 0);
             }
         }

@@ -153,6 +153,9 @@ contract DeployAnvilSepoliaFork is Script {
         hook.setLPFeeAccumulator(address(lpFeeAccumulator));
         hook.setBackrunRecorder(address(flashBackrunner));
 
+        // On Anvil forks Chainlink feed timestamps are stale, so extend the window.
+        oracleRegistry.setMaxStaleness(365 days);
+
         // 8) Authorizations
         arbitrageAgent.authorizeCaller(address(agentExecutor), true);
         dynamicFeeAgent.authorizeCaller(address(agentExecutor), true);
@@ -249,8 +252,16 @@ contract DeployAnvilSepoliaFork is Script {
         repayPoolId = repayPoolKey.toId();
 
         uint160 sqrtPriceX96 = HookLib.priceToSqrtPrice(oraclePrice);
-        pm.initialize(hookPoolKey, sqrtPriceX96);
-        pm.initialize(repayPoolKey, sqrtPriceX96);
+
+        // Only initialize pools that don't already exist (avoids PoolAlreadyInitialized revert on re-deploy)
+        {
+            (uint160 existing,,,) = pm.getSlot0(hookPoolId);
+            if (existing == 0) pm.initialize(hookPoolKey, sqrtPriceX96);
+        }
+        {
+            (uint160 existing,,,) = pm.getSlot0(repayPoolId);
+            if (existing == 0) pm.initialize(repayPoolKey, sqrtPriceX96);
+        }
 
         (, int24 tick,,) = pm.getSlot0(hookPoolId);
         int24 tickLower = _floorTick(_clampTick(tick - 60_000), hookPoolKey.tickSpacing);
@@ -306,27 +317,44 @@ contract DeployAnvilSepoliaFork is Script {
 
     function _seedAaveLiquidityBestEffort(address deployer) internal {
         // Keep these modest to avoid hitting supply caps or rate-limits on Sepolia.
-        uint256 wethSupply = 10 ether;
-        uint256 daiSupply = 100_000 ether;
+        // WETH is seeded by default. DAI seeding is opt-in because stable reserves can be paused/frozen.
+        uint256 wethSupply = vm.envOr("AAVE_WETH_SUPPLY", uint256(10 ether));
+        bool seedDai = vm.envOr("SEED_AAVE_DAI", false);
+        uint256 daiSupply = seedDai ? vm.envOr("AAVE_DAI_SUPPLY", uint256(100_000 ether)) : 0;
+        bool strict = vm.envOr("SEED_AAVE_STRICT", false);
 
-        if (IERC20(WETH).balanceOf(deployer) >= wethSupply) {
-            IERC20(WETH).approve(AAVE_POOL_SEPOLIA, wethSupply);
-            (bool ok,) = AAVE_POOL_SEPOLIA.call(
-                abi.encodeWithSelector(IAavePoolSupplyLike.supply.selector, WETH, wethSupply, deployer, 0)
-            );
-            if (!ok) console.log("WARN: Aave supply(WETH) failed on this fork");
-        } else {
-            console.log("WARN: skipping Aave WETH supply (insufficient WETH)");
+        if (wethSupply > 0) {
+            if (IERC20(WETH).balanceOf(deployer) >= wethSupply) {
+                IERC20(WETH).approve(AAVE_POOL_SEPOLIA, wethSupply);
+                (bool ok,) = AAVE_POOL_SEPOLIA.call(
+                    abi.encodeWithSelector(IAavePoolSupplyLike.supply.selector, WETH, wethSupply, deployer, 0)
+                );
+                if (!ok) {
+                    if (strict) revert("Aave supply(WETH) failed on this fork");
+                    console.log("WARN: Aave supply(WETH) failed on this fork");
+                }
+            } else if (strict) {
+                revert("insufficient WETH for Aave seeding");
+            } else {
+                console.log("WARN: skipping Aave WETH supply (insufficient WETH)");
+            }
         }
 
-        if (IERC20(DAI).balanceOf(deployer) >= daiSupply) {
-            IERC20(DAI).approve(AAVE_POOL_SEPOLIA, daiSupply);
-            (bool ok,) = AAVE_POOL_SEPOLIA.call(
-                abi.encodeWithSelector(IAavePoolSupplyLike.supply.selector, DAI, daiSupply, deployer, 0)
-            );
-            if (!ok) console.log("WARN: Aave supply(DAI) failed on this fork");
-        } else {
-            console.log("WARN: skipping Aave DAI supply (insufficient DAI)");
+        if (daiSupply > 0) {
+            if (IERC20(DAI).balanceOf(deployer) >= daiSupply) {
+                IERC20(DAI).approve(AAVE_POOL_SEPOLIA, daiSupply);
+                (bool ok,) = AAVE_POOL_SEPOLIA.call(
+                    abi.encodeWithSelector(IAavePoolSupplyLike.supply.selector, DAI, daiSupply, deployer, 0)
+                );
+                if (!ok) {
+                    if (strict) revert("Aave supply(DAI) failed on this fork");
+                    console.log("WARN: Aave supply(DAI) failed on this fork");
+                }
+            } else if (strict) {
+                revert("insufficient DAI for Aave seeding");
+            } else {
+                console.log("WARN: skipping Aave DAI supply (insufficient DAI)");
+            }
         }
     }
 
