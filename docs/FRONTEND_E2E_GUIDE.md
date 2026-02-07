@@ -1,4 +1,4 @@
-# Frontend E2E Guide (Local Sepolia Fork)
+# SwarmRep Frontend E2E Guide (Local Sepolia Fork)
 
 This guide is the practical, step-by-step way to test the whole protocol **from the frontend** against your local Anvil (forking Sepolia).
 
@@ -37,10 +37,31 @@ forge script script/DeployAnvilSepoliaFork.s.sol:DeployAnvilSepoliaFork \
   --broadcast -vvv
 ```
 
+If you already deployed with `SEED_AAVE_LIQUIDITY=false`, run seeding after deploy:
+
+```bash
+PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+AAVE_WETH_SUPPLY=10000000000000000000 \
+SEED_AAVE_DAI=false \
+forge script script/SeedAaveLiquidityAnvilSepoliaFork.s.sol:SeedAaveLiquidityAnvilSepoliaFork \
+  --rpc-url http://127.0.0.1:8545 \
+  --broadcast -vvv
+```
+
 From the deploy output, copy the `.env` values.
 Also copy:
 - `SimpleRouteAgent`
 - `FlashBackrunExecutorAgent`
+
+### Fix Oracle Staleness (Only for Older Deploys)
+
+On Anvil forks, Chainlink feed timestamps become stale. `DeployAnvilSepoliaFork.s.sol` now sets this automatically to `365 days`. Run this only if you deployed before that change:
+
+```bash
+cast send <ORACLE_REGISTRY_ADDRESS> "setMaxStaleness(uint256)" 315360000 \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
 
 ## 3) Configure + Run Frontend
 

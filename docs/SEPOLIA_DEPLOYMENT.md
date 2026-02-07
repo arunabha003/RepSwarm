@@ -1,4 +1,4 @@
-# Sepolia Deployment Guide (No Mocks)
+# SwarmRep Sepolia Deployment Guide (No Mocks)
 
 This guide is for deploying the **real protocol contracts** to **Ethereum Sepolia**.
 It uses:
@@ -151,4 +151,3 @@ Use printed addresses in `frontend/.env`:
 - Backrun execution is transaction-triggered (permissionless via `FlashBackrunExecutorAgent`).
 - Route proposal/execution can be one-click from frontend using `SimpleRouteAgent`.
 - On-chain scoring is enabled via `AgentExecutor.setOnchainScoringConfig`, so no separate scoring server is required.
-

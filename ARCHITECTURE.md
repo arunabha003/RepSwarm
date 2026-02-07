@@ -1,6 +1,6 @@
-# Swarm Architecture
+# SwarmRep Architecture
 
-Swarm is a Uniswap v4 hook-based protocol with two distinct “planes”:
+SwarmRep is a Uniswap v4 hook-based protocol with two distinct “planes”:
 
 - Swap plane (hook path): on every swap, the hook calls on-chain **hook agents** via an **AgentExecutor**.
 - Intent plane (coordinator path): users submit **intents** and **route agents** propose which route to use; the coordinator executes the swap through v4 while attaching hookData so the hook applies MEV rules.
@@ -10,8 +10,8 @@ The system is designed so user swaps never depend on off-chain automation. Anyth
 ## Key Actors
 
 - User: creates and executes intents (frontend).
-- Route agent (off-chain): proposes the best candidate route for an intent.
-- Keeper (off-chain): executes recorded backruns (flashloan mode) after swaps.
+- Route agent (`SimpleRouteAgent`): on-chain proposer contract, optionally driven by off-chain bots/services.
+- Backrun executor caller (on-chain): any EOA/bot can trigger `FlashBackrunExecutorAgent.execute(poolId)`.
 - Admin: can hot-swap hook agents and configure enforcement/switching policies.
 
 ## Contracts (What Each Does)
@@ -118,21 +118,21 @@ The system is designed so user swaps never depend on off-chain automation. Anyth
    - the swap occurs through the hooked pool, so the hook logic runs (swap plane)
 4. Coordinator writes positive ERC-8004 feedback for the winning route agent (best-effort).
 
-### C) Backrun Execution (Permissionless or Off-Chain Trigger)
+### C) Backrun Execution (Permissionless)
 
 1. Hook records opportunity and emits `BackrunOpportunityDetected`.
 2. Executor calls:
    - permissionless on-chain `FlashBackrunExecutorAgent.execute(poolId)`, or
-   - off-chain keeper watches events and calls:
-   - `FlashLoanBackrunner.executeBackrunPartial(...)` (flashloan mode), or
-   - `FlashLoanBackrunner.executeBackrunWithCapital(...)` (capital mode)
+   - direct backrunner methods:
+     - `FlashLoanBackrunner.executeBackrunPartial(...)` (flashloan mode), or
+     - `FlashLoanBackrunner.executeBackrunWithCapital(...)` (capital mode)
 3. Profits are routed:
    - 80% to `LPFeeAccumulator` (donation later)
    - 20% to keeper
 
 ## Agent Switching Model
 
-Swarm supports three layers of switching:
+SwarmRep supports three layers of switching:
 
 1. Manual switching (admin)
   - `AgentExecutor.registerAgent(agentType, newAgent)`
@@ -149,16 +149,15 @@ Swarm supports three layers of switching:
 
 This is off-path to avoid introducing external calls and failure modes into swaps.
 
-## Off-Chain Services (Optional)
+## External Automation (Optional)
 
-- Backrun keeper: `keeper/backrun-keeper.js`
-  - listens to `BackrunOpportunityDetected`
-  - executes flashloan backruns automatically
+- Backrun automation bot (not bundled in this repo)
+  - can listen to `BackrunOpportunityDetected`
+  - can call `FlashBackrunExecutorAgent.execute(poolId)` automatically
 
-- Scoring keeper: `keeper/agent-score-keeper.js`
-  - listens to `AgentExecutor.AgentExecuted`
-  - writes +1/-1 feedback to ERC-8004 ReputationRegistry (so threshold switching has real data)
-  - optional if using on-chain scoring in `AgentExecutor`
+- Scoring bot (not bundled in this repo)
+  - can write additional +1/-1 feedback to ERC-8004 ReputationRegistry
+  - optional when on-chain scoring is enabled in `AgentExecutor`
 
 ## Deployment (Local Sepolia Fork)
 

@@ -1,11 +1,11 @@
-# Local Sepolia-Fork E2E (Anvil + Frontend + Keeper)
+# Local Sepolia-Fork E2E (Anvil + Frontend)
 
 This guide runs a full end-to-end demo locally using:
 
 - Anvil forking Sepolia (`chainId=31337`)
-- Swarm contracts deployed into that local chain
+- SwarmRep contracts deployed into that local chain
 - The React frontend (`frontend/`)
-- Optional event-driven keeper (`keeper/`) for automatic backrun execution
+- Optional external automation bot for automatic backrun execution (not bundled in this repo)
 
 ## 1) Start Anvil (Sepolia Fork)
 
@@ -33,11 +33,12 @@ Notes:
 - The default Anvil account `0xf39f...` corresponds to the default private key below.
 - Amount is raw integer (DAI on Sepolia is 18 decimals).
 
-## 3) Deploy Swarm + Create Pools + Add Liquidity
+## 3) Deploy SwarmRep + Create Pools + Add Liquidity
 
 ```bash
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
-SEED_AAVE_LIQUIDITY=false \
+SEED_AAVE_LIQUIDITY=true \
+SEED_AAVE_DAI=false \
 forge script script/DeployAnvilSepoliaFork.s.sol:DeployAnvilSepoliaFork \
   --rpc-url http://127.0.0.1:8545 \
   --broadcast -vvv
@@ -59,6 +60,26 @@ If you already deployed without seeding, you can run:
 
 ```bash
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+AAVE_WETH_SUPPLY=10000000000000000000 \
+SEED_AAVE_DAI=false \
+forge script script/SeedAaveLiquidityAnvilSepoliaFork.s.sol:SeedAaveLiquidityAnvilSepoliaFork \
+  --rpc-url http://127.0.0.1:8545 \
+  --broadcast -vvv
+```
+
+If you want to also seed DAI for broader flashloan tests:
+
+```bash
+python3 tools/anvil_set_erc20_balance.py \
+  --rpc http://127.0.0.1:8545 \
+  --token 0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357 \
+  --account 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
+  --amount 500000000000000000000000
+
+PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+AAVE_WETH_SUPPLY=10000000000000000000 \
+SEED_AAVE_DAI=true \
+AAVE_DAI_SUPPLY=100000000000000000000000 \
 forge script script/SeedAaveLiquidityAnvilSepoliaFork.s.sol:SeedAaveLiquidityAnvilSepoliaFork \
   --rpc-url http://127.0.0.1:8545 \
   --broadcast -vvv
@@ -107,32 +128,23 @@ Open the printed URL (default `http://localhost:3000`).
 
 3. In the frontend:
 - Tab `Quick Intent`: click `Approve In Token`, then `Create Intent`.
-- Tab `Admin`: register a route agent (you can use your own address + any non-zero agentId for local demo).
-- Tab `Intent Desk`: load the intentId, submit a proposal, then execute the intent as requester.
+- Tab `Intent Desk`: load the `intentId`, then click `Auto Propose + Execute via Router`.
 - Tab `LP Donations`: compute `poolId` (helper) and call `Donate To LPs` once there are accumulated fees/profits.
 
-## 6) Optional: Event-Driven Keeper (Automatic Backruns)
+## 6) Optional: External Automation Bot (Automatic Backruns)
 
-The keeper watches for backrun events and calls the backrunner automatically (flashloan path).
-
-```bash
-cd keeper
-npm install
-cp .env.example .env
-```
-
-Set:
-- `SEPOLIA_RPC_URL=http://127.0.0.1:8545`
-- `FLASH_BACKRUNNER_ADDRESS=<FlashLoanBackrunner from deploy summary>`
-- `KEEPER_PRIVATE_KEY=<a funded anvil private key>`
-
-Then run:
+No local keeper service is required. If you want automatic execution, run any external bot that watches
+`BackrunOpportunityDetected` and submits:
 
 ```bash
-npm run start
+cast send <FLASH_BACKRUN_EXECUTOR_AGENT_ADDRESS> \
+  "execute(bytes32)(address,uint256)" <HOOK_POOL_ID> \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key <ANY_FUNDED_ANVIL_KEY>
 ```
 
 Important:
-- The backrunner owner must authorize your keeper EOA:
-- `FlashLoanBackrunner.setKeeperAuthorization(keeper,true)`
-- The deploy script already authorizes the deployer as keeper; if you use a different key, authorize it.
+- The deploy script already authorizes `FlashBackrunExecutorAgent` as keeper/forwarder.
+- If your automation calls backrunner methods directly, authorize that caller with:
+  - `FlashLoanBackrunner.setKeeperAuthorization(caller,true)`
+  - `FlashLoanBackrunner.setForwarderAuthorization(caller,true)`
