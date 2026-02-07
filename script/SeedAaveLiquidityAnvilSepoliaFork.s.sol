@@ -24,7 +24,9 @@ contract SeedAaveLiquidityAnvilSepoliaFork is Script {
         address who = vm.addr(pk);
 
         uint256 wethSupply = vm.envOr("AAVE_WETH_SUPPLY", uint256(10 ether));
-        uint256 daiSupply = vm.envOr("AAVE_DAI_SUPPLY", uint256(100_000 ether));
+        bool seedDai = vm.envOr("SEED_AAVE_DAI", false);
+        uint256 daiSupply = seedDai ? vm.envOr("AAVE_DAI_SUPPLY", uint256(100_000 ether)) : 0;
+        bool strict = vm.envOr("SEED_AAVE_STRICT", false);
 
         uint256 extraWethDeposit = vm.envOr("EXTRA_WETH_DEPOSIT", uint256(0));
 
@@ -42,27 +44,46 @@ contract SeedAaveLiquidityAnvilSepoliaFork is Script {
 
         // WETH
         if (wethSupply > 0) {
-            require(IERC20(WETH).balanceOf(who) >= wethSupply, "insufficient WETH (deposit more first)");
-            IERC20(WETH).approve(AAVE_POOL_SEPOLIA, wethSupply);
-            (bool ok,) = AAVE_POOL_SEPOLIA.call(
-                abi.encodeWithSelector(IAavePoolSupplyLike.supply.selector, WETH, wethSupply, who, 0)
-            );
-            require(ok, "Aave supply(WETH) failed");
+            if (IERC20(WETH).balanceOf(who) >= wethSupply) {
+                IERC20(WETH).approve(AAVE_POOL_SEPOLIA, wethSupply);
+                (bool ok,) = AAVE_POOL_SEPOLIA.call(
+                    abi.encodeWithSelector(IAavePoolSupplyLike.supply.selector, WETH, wethSupply, who, 0)
+                );
+                if (!ok) {
+                    if (strict) revert("Aave supply(WETH) failed");
+                    console.log("WARN: Aave supply(WETH) failed");
+                } else {
+                    console.log("OK: seeded WETH into Aave");
+                }
+            } else if (strict) {
+                revert("insufficient WETH (deposit more first)");
+            } else {
+                console.log("WARN: skipping WETH seed (insufficient WETH)");
+            }
         }
 
         // DAI
         if (daiSupply > 0) {
-            require(IERC20(DAI).balanceOf(who) >= daiSupply, "insufficient DAI (fund first)");
-            IERC20(DAI).approve(AAVE_POOL_SEPOLIA, daiSupply);
-            (bool ok,) = AAVE_POOL_SEPOLIA.call(
-                abi.encodeWithSelector(IAavePoolSupplyLike.supply.selector, DAI, daiSupply, who, 0)
-            );
-            require(ok, "Aave supply(DAI) failed");
+            if (IERC20(DAI).balanceOf(who) >= daiSupply) {
+                IERC20(DAI).approve(AAVE_POOL_SEPOLIA, daiSupply);
+                (bool ok,) = AAVE_POOL_SEPOLIA.call(
+                    abi.encodeWithSelector(IAavePoolSupplyLike.supply.selector, DAI, daiSupply, who, 0)
+                );
+                if (!ok) {
+                    if (strict) revert("Aave supply(DAI) failed");
+                    console.log("WARN: Aave supply(DAI) failed");
+                } else {
+                    console.log("OK: seeded DAI into Aave");
+                }
+            } else if (strict) {
+                revert("insufficient DAI (fund first)");
+            } else {
+                console.log("WARN: skipping DAI seed (insufficient DAI)");
+            }
         }
 
         vm.stopBroadcast();
 
-        console.log("OK: seeded Aave liquidity");
+        console.log("DONE: Aave seeding script finished");
     }
 }
-
