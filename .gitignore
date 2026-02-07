@@ -13,3 +13,5 @@ node_modules/
 .next/
 frontend/dist/
 frontend/.vite/
+
+.DS_Store
