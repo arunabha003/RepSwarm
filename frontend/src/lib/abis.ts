@@ -103,6 +103,7 @@ export const LPFeeAccumulatorAbi = [
   "event FeesDonatedToLPs(bytes32 indexed poolId,address indexed currency0,address indexed currency1,uint256 amount0,uint256 amount1)",
   "function accumulatedFees(bytes32 poolId,address currency) view returns (uint256)",
   "function canDonate(bytes32 poolId) view returns (bool canDonate,uint256 amount0,uint256 amount1)",
+  "function getTotalDonated(bytes32 poolId,address currency) view returns (uint256)",
   "function donateToLPs(bytes32 poolId)"
 ];
 
@@ -111,6 +112,7 @@ export const FlashLoanBackrunnerAbi = [
   "event BackrunExecuted(bytes32 indexed poolId,uint256 flashLoanAmount,uint256 profit,uint256 lpShare,address keeper)",
   "function authorizedKeepers(address) view returns (bool)",
   "function getPendingBackrun(bytes32 poolId) view returns (uint256 targetPrice,uint256 currentPrice,uint256 backrunAmount,bool zeroForOne,uint64 timestamp,uint64 blockNumber,bool executed)",
+  "function checkProfitability(bytes32 poolId) view returns (bool profitable,uint256 estimatedProfit)",
   "function executeBackrunPartial(bytes32 poolId,uint256 flashLoanAmount,uint256 minProfit)",
   "function executeBackrunWithCapital(bytes32 poolId,uint256 amountIn,uint256 minProfit)"
 ];

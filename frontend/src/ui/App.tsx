@@ -891,7 +891,7 @@ function QuickIntentPanel({
   const [currencyOut, setCurrencyOut] = useState(cfg.defaultPool.currencyOut);
   const [amountIn, setAmountIn] = useState("0.01");
   const [amountOutMin, setAmountOutMin] = useState("0");
-  const [deadlineSec, setDeadlineSec] = useState("0");
+  const [deadlineMinutes, setDeadlineMinutes] = useState("60");
   const [mevFeeBps, setMevFeeBps] = useState("30");
   const [treasuryBps, setTreasuryBps] = useState("200");
   const [lpShareBps, setLpShareBps] = useState("8000");
@@ -1042,7 +1042,7 @@ function QuickIntentPanel({
         currencyOut,
         amountIn: parseUnitsSafe(amountIn, inMeta.decimals),
         amountOutMin: parseUnitsSafe(amountOutMin, outMeta.decimals),
-        deadline: BigInt(deadlineSec || "0"),
+        deadline: BigInt(Math.floor(Date.now() / 1000) + Number(deadlineMinutes || "60") * 60),
         mevFeeBps: Number(mevFeeBps),
         treasuryBps: Number(treasuryBps),
         lpShareBps: Number(lpShareBps)
@@ -1143,6 +1143,10 @@ function QuickIntentPanel({
           <div className="field">
             <label>LP Share (bps)</label>
             <input value={lpShareBps} onChange={(e) => setLpShareBps(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Deadline (minutes from now)</label>
+            <input value={deadlineMinutes} onChange={(e) => setDeadlineMinutes(e.target.value)} placeholder="60" />
           </div>
         </div>
 
@@ -1504,12 +1508,14 @@ function LpPanel({
     setBusy(true);
     try {
       const { currency0, currency1 } = sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut);
-      const [r, m0, m1] = await Promise.all([
+      const [r, m0, m1, totalDonated0, totalDonated1] = await Promise.all([
         lpAccumulator.canDonate(poolId),
         readTokenMeta(currency0, lpAccumulator.runner as any),
-        readTokenMeta(currency1, lpAccumulator.runner as any)
+        readTokenMeta(currency1, lpAccumulator.runner as any),
+        lpAccumulator.getTotalDonated(poolId, currency0).catch(() => 0n),
+        lpAccumulator.getTotalDonated(poolId, currency1).catch(() => 0n)
       ]);
-      setInfo({ canDonate: r[0], amount0: r[1], amount1: r[2] });
+      setInfo({ canDonate: r[0], amount0: r[1], amount1: r[2], totalDonated0: BigInt(totalDonated0), totalDonated1: BigInt(totalDonated1) });
       setToken0Meta(m0);
       setToken1Meta(m1);
     } catch (e: any) {
@@ -1595,6 +1601,18 @@ function LpPanel({
                 {fmt18(BigInt(info.amount1), token1Meta?.decimals ?? 18)} {token1Meta?.symbol ?? ""}
                 {" · raw "}
                 {String(info.amount1)}
+              </span>
+            </div>
+            <div className="kv">
+              <b>Total Donated ({token0Meta?.symbol ?? "Token0"})</b>
+              <span>
+                {fmt18(info.totalDonated0, token0Meta?.decimals ?? 18)} {token0Meta?.symbol ?? ""}
+              </span>
+            </div>
+            <div className="kv">
+              <b>Total Donated ({token1Meta?.symbol ?? "Token1"})</b>
+              <span>
+                {fmt18(info.totalDonated1, token1Meta?.decimals ?? 18)} {token1Meta?.symbol ?? ""}
               </span>
             </div>
           </div>
@@ -1733,6 +1751,7 @@ function BackrunPanel({
   });
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<any | null>(null);
+  const [profitability, setProfitability] = useState<{ profitable: boolean; estimatedProfit: bigint } | null>(null);
   const [executorConfig, setExecutorConfig] = useState<{ maxFlashloanAmount: bigint; minProfit: bigint } | null>(null);
   const [lastBackrunnerExec, setLastBackrunnerExec] = useState<BackrunnerEventInfo | null>(null);
   const [lastExecutorExec, setLastExecutorExec] = useState<ExecutorEventInfo | null>(null);
@@ -1863,6 +1882,13 @@ function BackrunPanel({
         blockNumber: r[5],
         executed: r[6]
       });
+      // Check profitability
+      try {
+        const prof = await flashBackrunner.checkProfitability(normalizedPoolId);
+        setProfitability({ profitable: Boolean(prof[0]), estimatedProfit: BigInt(prof[1]) });
+      } catch {
+        setProfitability(null);
+      }
       if (flashBackrunExecutorAgent) {
         try {
           const [maxFlashloanAmount, cfgMinProfit] = await Promise.all([
@@ -2005,17 +2031,44 @@ function BackrunPanel({
               </span>
             </div>
             <div className="kv">
+              <b>Target Price</b>
+              <span>{fmt18(BigInt(info.targetPrice))} DAI/WETH</span>
+            </div>
+            <div className="kv">
+              <b>Current Price</b>
+              <span>{fmt18(BigInt(info.currentPrice))} DAI/WETH</span>
+            </div>
+            <div className="kv">
               <b>Backrun Amount</b>
-              <span>{fmt18(BigInt(info.backrunAmount))}</span>
+              <span>{fmt18(BigInt(info.backrunAmount))} WETH</span>
             </div>
             <div className="kv">
               <b>Direction</b>
-              <span>{info.zeroForOne ? "Zero → One" : "One → Zero"}</span>
+              <span>{info.zeroForOne ? "Zero → One (sell WETH)" : "One → Zero (buy WETH)"}</span>
             </div>
             <div className="kv">
               <b>Detected Block</b>
               <span>{String(info.blockNumber)}</span>
             </div>
+            <div className="kv">
+              <b>Detected Time</b>
+              <span>{BigInt(info.timestamp) > 0n ? new Date(Number(BigInt(info.timestamp)) * 1000).toLocaleString() : "—"}</span>
+            </div>
+            {profitability && (
+              <>
+                <div className="kv">
+                  <b>Profitable</b>
+                  <span>
+                    <span className={`statusDot ${profitability.profitable ? "active" : "inactive"}`} />
+                    {profitability.profitable ? "Yes — Ready to execute" : "No"}
+                  </span>
+                </div>
+                <div className="kv">
+                  <b>Estimated Profit</b>
+                  <span>{fmt18(profitability.estimatedProfit)} WETH</span>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -2025,9 +2078,29 @@ function BackrunPanel({
             <span>{lastBackrunnerExec ? shortAddr(lastBackrunnerExec.txHash) : "—"}</span>
           </div>
           <div className="kv">
+            <b>Flash Loan Amount</b>
+            <span>
+              {lastBackrunnerExec ? `${fmt18(lastBackrunnerExec.flashLoanAmount)} WETH` : "—"}
+            </span>
+          </div>
+          <div className="kv">
             <b>Backrunner Profit</b>
             <span>
-              {lastBackrunnerExec ? `${fmt18(lastBackrunnerExec.profit)} (${String(lastBackrunnerExec.profit)} raw)` : "—"}
+              {lastBackrunnerExec ? `${fmt18(lastBackrunnerExec.profit)} WETH` : "—"}
+            </span>
+          </div>
+          <div className="kv">
+            <b>LP Share (80%)</b>
+            <span>
+              {lastBackrunnerExec ? `${fmt18(lastBackrunnerExec.lpShare)} WETH` : "—"}
+            </span>
+          </div>
+          <div className="kv">
+            <b>Keeper Bounty (20%)</b>
+            <span>
+              {lastBackrunnerExec
+                ? `${fmt18(lastBackrunnerExec.profit - lastBackrunnerExec.lpShare)} WETH`
+                : "—"}
             </span>
           </div>
           <div className="kv">
@@ -2040,7 +2113,7 @@ function BackrunPanel({
           </div>
           <div className="kv">
             <b>Executor Bounty</b>
-            <span>{lastExecutorExec ? `${fmt18(lastExecutorExec.bounty)} (${String(lastExecutorExec.bounty)} raw)` : "—"}</span>
+            <span>{lastExecutorExec ? `${fmt18(lastExecutorExec.bounty)} WETH` : "—"}</span>
           </div>
           <div className="kv">
             <b>Executor Caller</b>
