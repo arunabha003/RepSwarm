@@ -88,6 +88,23 @@ Deployed via `script/DeploySwarmProtocol.s.sol` on Ethereum Sepolia (`chainId=11
 - DAI: [`0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357`](https://sepolia.etherscan.io/address/0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357)
 - Chainlink ETH/USD: [`0x694AA1769357215DE4FAC081bf1f309aDC325306`](https://sepolia.etherscan.io/address/0x694AA1769357215DE4FAC081bf1f309aDC325306)
 
+### Deployment TxIDs
+
+| Contract | Creation TxID |
+|----------|---|
+| OracleRegistry | [0xc3b7ab20a35d3040ccb5b0a7350e107adea96faaa29020d4c58de15461b8cacf](https://sepolia.etherscan.io/tx/0xc3b7ab20a35d3040ccb5b0a7350e107adea96faaa29020d4c58de15461b8cacf) |
+| LPFeeAccumulator | [0xf237035d3ae113773188cd68855ed60ddbdcb599c1912aa908f5b99737ac68cb](https://sepolia.etherscan.io/tx/0xf237035d3ae113773188cd68855ed60ddbdcb599c1912aa908f5b99737ac68cb) |
+| AgentExecutor | [0xc626fa8cb24a23ba3be6cb62ac7a6ec2312051e726c6ed4a0e6e8ef2073dadae](https://sepolia.etherscan.io/tx/0xc626fa8cb24a23ba3be6cb62ac7a6ec2312051e726c6ed4a0e6e8ef2073dadae) |
+| SwarmHook | [0x4d9edd58ca542bebf8906aa7e257ef30f41e670891b3843a63d5beb3475f6a4c](https://sepolia.etherscan.io/tx/0x4d9edd58ca542bebf8906aa7e257ef30f41e670891b3843a63d5beb3475f6a4c) |
+| SwarmCoordinator | [0xec5f9a96731b7493c5801b5e0551b01f639e55af8c2c1de63fb19fc0ef2b939f](https://sepolia.etherscan.io/tx/0xec5f9a96731b7493c5801b5e0551b01f639e55af8c2c1de63fb19fc0ef2b939f) |
+| FlashLoanBackrunner | [0x52db0e939f556df016032bb2d137087a1291106de34209a333e85116f8166](https://sepolia.etherscan.io/tx/0x52db0e939f556df016032bb2d137087a1291106de34209a333e85116f8166) |
+| SimpleRouteAgent | [0x096eaaecd3273548f5256b32f1af26d006c537965de036309fb07c537965de036](https://sepolia.etherscan.io/tx/0x096eaaecd3273548f5256b32f1af26d006c537965de036309fb07c537965de036) |
+| FlashBackrunExecutorAgent | [0x52db0e939f556df016032bb2d137087a1291106de34fc38e5f5b66cb7e542ffb](https://sepolia.etherscan.io/tx/0x52db0e939f556df016032bb2d137087a1291106de34fc38e5f5b66cb7e542ffb) |
+| SwarmAgentRegistry | [0xe440c3ca1d834c46023e28b310e5e5cf62684273](https://sepolia.etherscan.io/tx/0xe440c3ca1d834c46023e28b310e5e5cf62684273) |
+| ArbitrageAgent | [0xa16ad0502561af77e2e5d55f280bdfaf74fb5c9df6bb79d4f9a7e18ac357d97a](https://sepolia.etherscan.io/tx/0xa16ad0502561af77e2e5d55f280bdfaf74fb5c9df6bb79d4f9a7e18ac357d97a) |
+| DynamicFeeAgent | [0xe86a6e59b14f12c476e287689af9c34762ef5be8768da7c47265fb5a526746a6](https://sepolia.etherscan.io/tx/0xe86a6e59b14f12c476e287689af9c34762ef5be8768da7c47265fb5a526746a6) |
+| BackrunAgent | [0xc73e82c0d812b04e0a5340544947d56429430a](https://sepolia.etherscan.io/tx/0xc73e82c0d812b04e0a5340544947d56429430a) |
+
 ---
 
 ## Quick Start (Local Sepolia Fork)
@@ -242,6 +259,9 @@ All integrations use real Sepolia deployments — zero mocked contracts in `src/
 ---
 
 ## Notes
+
+- **Live Sepolia Limitation**: Sepolia testnet has minimal liquidity. Live swaps on Sepolia may fail or execute with poor pricing. **Use local Anvil fork testing** (see [ANVIL_SEPOLIA_E2E.md](docs/ANVIL_SEPOLIA_E2E.md)) for full protocol testing — Anvil forks have deterministic liquidity and oracle feeds from the real Sepolia state.
+- Oracle pricing uses Chainlink ETH/USD as a proxy for WETH/DAI (assumes DAI ≈ USD). Production deployments should use pair-specific feeds.
 - This repo is not audited. It is a hackathon prototype demonstrating MEV redistribution via hook agents.
 
 ---
