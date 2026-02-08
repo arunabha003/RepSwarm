@@ -92,6 +92,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
 
     /// @notice Pending backrun opportunities per pool
     mapping(PoolId => BackrunOpportunity) public pendingBackruns;
+    mapping(PoolId => bool) public executionInProgress;
 
     /// @notice Repay pool per pool (used to swap output back into borrowed asset)
     /// @dev In production this would typically be a deep-liquidity pool without the hook, or another venue.
@@ -204,6 +205,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         bool zeroForOne
     ) external onlyRecorder {
         PoolId poolId = poolKey.toId();
+        if (executionInProgress[poolId]) return;
 
         pendingBackruns[poolId] = BackrunOpportunity({
             poolKey: poolKey,
@@ -257,6 +259,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
             amountIn = opp.backrunAmount;
         }
 
+        executionInProgress[poolId] = true;
         opp.executed = true;
 
         address tokenIn =
@@ -279,6 +282,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
 
         // Distribute profit (LPs + keeper).
         _distributeProfit(opp.poolKey, tokenIn, profit, msg.sender);
+        executionInProgress[poolId] = false;
     }
 
     /// @notice Execute a pending backrun using flash loan on behalf of an authorized keeper
@@ -311,6 +315,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
         if (block.number > uint256(opp.blockNumber) + maxOpportunityAgeBlocks) revert OpportunityExpired();
 
         // Mark as executed to prevent reentrancy
+        executionInProgress[poolId] = true;
         opp.executed = true;
 
         if (!repayPoolKeySet[poolId]) revert RepayPoolNotSet(poolId);
@@ -350,6 +355,7 @@ contract FlashLoanBackrunner is IFlashLoanSimpleReceiver, Ownable, ReentrancyGua
             params,
             0 // referral code
         );
+        executionInProgress[poolId] = false;
     }
 
     /// @notice Aave flash loan callback
