@@ -111,6 +111,7 @@ export const FlashLoanBackrunnerAbi = [
   "event BackrunOpportunityDetected(bytes32 indexed poolId,uint256 targetPrice,uint256 currentPrice,uint256 backrunAmount,bool zeroForOne)",
   "event BackrunExecuted(bytes32 indexed poolId,uint256 flashLoanAmount,uint256 profit,uint256 lpShare,address keeper)",
   "function authorizedKeepers(address) view returns (bool)",
+  "function pendingBackruns(bytes32 poolId) view returns (tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,uint256 targetPrice,uint256 currentPrice,uint256 backrunAmount,bool zeroForOne,uint64 timestamp,uint64 blockNumber,bool executed)",
   "function getPendingBackrun(bytes32 poolId) view returns (uint256 targetPrice,uint256 currentPrice,uint256 backrunAmount,bool zeroForOne,uint64 timestamp,uint64 blockNumber,bool executed)",
   "function checkProfitability(bytes32 poolId) view returns (bool profitable,uint256 estimatedProfit)",
   "function executeBackrunPartial(bytes32 poolId,uint256 flashLoanAmount,uint256 minProfit)",

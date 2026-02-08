@@ -116,6 +116,15 @@ function sqrtPriceX96ToPrice18(sqrtPriceX96: bigint): bigint {
   return num / Q192;
 }
 
+function adjustPrice18ForTokenDecimals(price18: bigint, token0Decimals: number, token1Decimals: number): bigint {
+  if (price18 === 0n) return 0n;
+  if (token0Decimals === token1Decimals) return price18;
+  if (token0Decimals > token1Decimals) {
+    return price18 * 10n ** BigInt(token0Decimals - token1Decimals);
+  }
+  return price18 / 10n ** BigInt(token1Decimals - token0Decimals);
+}
+
 function bpsDiff(a: bigint, b: bigint): bigint {
   if (b === 0n) return 0n;
   return ((a - b) * 10000n) / b;
@@ -297,29 +306,29 @@ export function App() {
       {/* Tab Navigation */}
       <div className="tabs" role="tablist" aria-label="Swarm tabs">
         <button className="tab" aria-selected={tab === "dashboard"} onClick={() => setTab("dashboard")}>
-          📊 Dashboard
+          Dashboard
         </button>
         <button className="tab" aria-selected={tab === "swap"} onClick={() => setTab("swap")}>
-          🔄 Quick Intent
+          Quick Intent
         </button>
         <button className="tab" aria-selected={tab === "intent"} onClick={() => setTab("intent")}>
-          📋 Intent Desk
+          Intent Desk
         </button>
         <button className="tab" aria-selected={tab === "lp"} onClick={() => setTab("lp")}>
-          💰 LP Donations
+          LP Donations
         </button>
         <button className="tab" aria-selected={tab === "backrun"} onClick={() => setTab("backrun")}>
-          ⚡ Backrun
+          Backrun
         </button>
         <button className="tab" aria-selected={tab === "admin"} onClick={() => setTab("admin")}>
-          ⚙️ Admin
+          Admin
         </button>
       </div>
 
       {/* Toast Notification */}
       {toast && (
         <div className={`toast ${toast.kind}`}>
-          {toast.kind === "ok" ? "✓ " : "✗ "}
+          {toast.kind === "ok" ? "OK: " : "Error: "}
           {toast.msg}
         </div>
       )}
@@ -386,6 +395,7 @@ function ProtocolDashboard({
     oraclePrice18: bigint;
     oracleUpdatedAt: bigint;
     poolPrice18: bigint;
+    pricePairLabel: string;
     tick: number;
     lpFee: number;
     liquidity: bigint;
@@ -436,11 +446,19 @@ function ProtocolDashboard({
 
       // Market data (never hard-fail the whole dashboard if the oracle call reverts)
       if (poolManager && poolId !== "0x") {
+        const marketRunner = (poolManager.runner ?? oracleRegistry?.runner ?? coordinator?.runner) as any;
+        const { currency0, currency1 } = sortCurrencies(cfg.defaultPool.currencyIn, cfg.defaultPool.currencyOut);
+        const [token0Meta, token1Meta] = await Promise.all([
+          readTokenMeta(currency0, marketRunner),
+          readTokenMeta(currency1, marketRunner)
+        ]);
+
         const [s0, liq] = await Promise.all([readV4Slot0(poolManager, poolId), readV4Liquidity(poolManager, poolId)]);
         const sqrt = BigInt(s0.sqrtPriceX96);
         const tick = Number(s0.tick);
         const lpFee = Number(s0.lpFee);
-        const poolPrice18 = sqrtPriceX96ToPrice18(sqrt);
+        const poolRawPrice18 = sqrtPriceX96ToPrice18(sqrt);
+        const poolPrice18 = adjustPrice18ForTokenDecimals(poolRawPrice18, token0Meta.decimals, token1Meta.decimals);
 
         let oraclePrice18 = 0n;
         let oracleUpdatedAt = 0n;
@@ -448,7 +466,7 @@ function ProtocolDashboard({
 
         if (oracleRegistry) {
           try {
-            const o = await oracleRegistry.getLatestPrice(cfg.defaultPool.currencyOut, cfg.defaultPool.currencyIn);
+            const o = await oracleRegistry.getLatestPrice(currency0, currency1);
             oraclePrice18 = BigInt(o[0]);
             oracleUpdatedAt = BigInt(o[1]);
           } catch (e: any) {
@@ -464,6 +482,7 @@ function ProtocolDashboard({
           oraclePrice18,
           oracleUpdatedAt,
           poolPrice18,
+          pricePairLabel: `${token1Meta.symbol}/${token0Meta.symbol}`,
           tick,
           lpFee,
           liquidity: BigInt(liq),
@@ -602,7 +621,7 @@ function ProtocolDashboard({
       <div className="dashHeader">
         <div>
           <div className="dashTitleWrap">
-            <div className="dashTitle">📊 Protocol Dashboard</div>
+            <div className="dashTitle">Protocol Dashboard</div>
             <InfoTooltip title="Protocol Dashboard">
               Real-time overview of the Swarm protocol status including market prices, your wallet balances, and the
               current state of on-chain hook agents that process every swap.
@@ -623,7 +642,7 @@ function ProtocolDashboard({
         <div className="dashCard">
           <div className="dashCardHeader">
             <div className="dashCardTitle">
-              📈 Market
+              Market
               <InfoTooltip title="Market Data">
                 Shows the current oracle price (from Chainlink) vs the pool's spot price. The difference in bps
                 indicates potential arbitrage opportunity. Hook agents use this data to protect your swaps.
@@ -636,11 +655,11 @@ function ProtocolDashboard({
             <div className="kvs">
               <div className="kv">
                 <b>Oracle Price</b>
-                <span>{market.oraclePrice18 > 0n ? `${fmt18(market.oraclePrice18)} DAI/WETH` : "—"}</span>
+                <span>{market.oraclePrice18 > 0n ? `${fmt18(market.oraclePrice18)} ${market.pricePairLabel}` : "—"}</span>
               </div>
               <div className="kv">
                 <b>Pool Spot Price</b>
-                <span>{fmt18(market.poolPrice18)} DAI/WETH</span>
+                <span>{fmt18(market.poolPrice18)} {market.pricePairLabel}</span>
               </div>
               <div className="kv">
                 <b>Price Diff</b>
@@ -664,7 +683,7 @@ function ProtocolDashboard({
         <div className="dashCard">
           <div className="dashCardHeader">
             <div className="dashCardTitle">
-              👛 Wallet
+              Wallet
               <InfoTooltip title="Your Wallet">
                 Your current token balances. You'll need tokens to create intents and execute swaps. Make sure you have
                 enough of the input token and ETH for gas.
@@ -703,7 +722,7 @@ function ProtocolDashboard({
             {/* Arbitrage Agent Card */}
             <div className="dashCard agent-arb">
               <div className="agentCardRow">
-                <div className="agentCardIcon arb">🎯</div>
+                <div className="agentCardIcon arb">ARB</div>
                 <div>
                   <div className="agentCardName">Arbitrage Agent</div>
                   <span className="agentCardType arb">ARB · Slot 0</span>
@@ -740,7 +759,7 @@ function ProtocolDashboard({
             {/* Dynamic Fee Agent Card */}
             <div className="dashCard agent-fee">
               <div className="agentCardRow">
-                <div className="agentCardIcon fee">⚡</div>
+                <div className="agentCardIcon fee">FEE</div>
                 <div>
                   <div className="agentCardName">Dynamic Fee Agent</div>
                   <span className="agentCardType fee">FEE · Slot 1</span>
@@ -777,7 +796,7 @@ function ProtocolDashboard({
             {/* Backrun Agent Card */}
             <div className="dashCard agent-backrun">
               <div className="agentCardRow">
-                <div className="agentCardIcon backrun">🔁</div>
+                <div className="agentCardIcon backrun">BR</div>
                 <div>
                   <div className="agentCardName">Backrun Agent</div>
                   <span className="agentCardType backrun">BACKRUN · Slot 2</span>
@@ -814,7 +833,7 @@ function ProtocolDashboard({
         ) : (
           <div className="dashCard">
             <div className="dashCardHeader">
-              <div className="dashCardTitle">🤖 Hook Agents</div>
+              <div className="dashCardTitle">Hook Agents</div>
             </div>
             <p className="muted">Click Refresh to load agent status</p>
           </div>
@@ -823,7 +842,7 @@ function ProtocolDashboard({
         {/* Route Agent Card */}
         <div className="dashCard agent-route">
           <div className="agentCardRow">
-            <div className="agentCardIcon route">🧭</div>
+            <div className="agentCardIcon route">RT</div>
             <div>
               <div className="agentCardName">Route Agent</div>
               <span className="agentCardType route">ERC-8004 · Router</span>
@@ -1717,22 +1736,9 @@ function BackrunPanel({
   flashBackrunExecutorAgent: ethers.Contract | null;
   onToast: (t: { kind: "ok" | "bad"; msg: string } | null) => void;
 }) {
-  type BackrunnerEventInfo = {
-    txHash: string;
-    blockNumber: number;
-    flashLoanAmount: bigint;
-    profit: bigint;
-    lpShare: bigint;
-    keeper: string;
-  };
-
-  type ExecutorEventInfo = {
-    txHash: string;
-    blockNumber: number;
-    caller: string;
-    token: string;
-    amountIn: bigint;
-    bounty: bigint;
+  type PoolMeta = {
+    token0: { address: string; symbol: string; decimals: number };
+    token1: { address: string; symbol: string; decimals: number };
   };
 
   const [poolId, setPoolId] = useState(() => {
@@ -1751,120 +1757,12 @@ function BackrunPanel({
   });
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<any | null>(null);
-  const [profitability, setProfitability] = useState<{ profitable: boolean; estimatedProfit: bigint } | null>(null);
+  const [poolMeta, setPoolMeta] = useState<PoolMeta | null>(null);
+  const [profitability, setProfitability] = useState<{ profitable: boolean } | null>(null);
   const [executorConfig, setExecutorConfig] = useState<{ maxFlashloanAmount: bigint; minProfit: bigint } | null>(null);
-  const [lastBackrunnerExec, setLastBackrunnerExec] = useState<BackrunnerEventInfo | null>(null);
-  const [lastExecutorExec, setLastExecutorExec] = useState<ExecutorEventInfo | null>(null);
 
   const normalizedPoolId = poolId.trim();
   const validPoolId = normalizedPoolId.startsWith("0x") && normalizedPoolId.length === 66;
-
-  function getProvider(contract: ethers.Contract | null): ethers.Provider | null {
-    if (!contract) return null;
-    const runner = contract.runner as any;
-    const provider = runner?.provider ?? runner;
-    return provider && typeof provider.getBlockNumber === "function" ? (provider as ethers.Provider) : null;
-  }
-
-  function parseBackrunnerEventFromReceipt(receipt: ethers.TransactionReceipt): BackrunnerEventInfo | null {
-    if (!flashBackrunner) return null;
-    for (const log of receipt.logs) {
-      try {
-        const parsed = flashBackrunner.interface.parseLog(log as any) as any;
-        if (parsed?.name !== "BackrunExecuted") continue;
-        return {
-          txHash: receipt.hash,
-          blockNumber: receipt.blockNumber,
-          flashLoanAmount: BigInt(parsed.args[1]),
-          profit: BigInt(parsed.args[2]),
-          lpShare: BigInt(parsed.args[3]),
-          keeper: String(parsed.args[4])
-        };
-      } catch {
-        // ignore unrelated logs
-      }
-    }
-    return null;
-  }
-
-  function parseExecutorEventFromReceipt(receipt: ethers.TransactionReceipt): ExecutorEventInfo | null {
-    if (!flashBackrunExecutorAgent) return null;
-    for (const log of receipt.logs) {
-      try {
-        const parsed = flashBackrunExecutorAgent.interface.parseLog(log as any) as any;
-        if (parsed?.name !== "BackrunExecuted") continue;
-        return {
-          txHash: receipt.hash,
-          blockNumber: receipt.blockNumber,
-          caller: String(parsed.args[1]),
-          token: String(parsed.args[2]),
-          amountIn: BigInt(parsed.args[3]),
-          bounty: BigInt(parsed.args[4])
-        };
-      } catch {
-        // ignore unrelated logs
-      }
-    }
-    return null;
-  }
-
-  async function loadRecentExecutionEvents(poolIdValue: string) {
-    const provider = getProvider(flashBackrunner) ?? getProvider(flashBackrunExecutorAgent);
-    if (!provider) return;
-
-    const latestBlock = await provider.getBlockNumber();
-    const fromBlock = Math.max(0, latestBlock - 5000);
-
-    let recentBackrunner: BackrunnerEventInfo | null = null;
-    if (flashBackrunner) {
-      try {
-        const events = await flashBackrunner.queryFilter(
-          flashBackrunner.filters.BackrunExecuted(poolIdValue),
-          fromBlock,
-          latestBlock
-        );
-        const evt = events.length > 0 ? (events[events.length - 1] as any) : null;
-        if (evt?.args) {
-          recentBackrunner = {
-            txHash: String(evt.transactionHash),
-            blockNumber: Number(evt.blockNumber),
-            flashLoanAmount: BigInt(evt.args[1]),
-            profit: BigInt(evt.args[2]),
-            lpShare: BigInt(evt.args[3]),
-            keeper: String(evt.args[4])
-          };
-        }
-      } catch {
-        // keep null
-      }
-    }
-    setLastBackrunnerExec(recentBackrunner);
-
-    let recentExecutor: ExecutorEventInfo | null = null;
-    if (flashBackrunExecutorAgent) {
-      try {
-        const events = await flashBackrunExecutorAgent.queryFilter(
-          flashBackrunExecutorAgent.filters.BackrunExecuted(poolIdValue, null),
-          fromBlock,
-          latestBlock
-        );
-        const evt = events.length > 0 ? (events[events.length - 1] as any) : null;
-        if (evt?.args) {
-          recentExecutor = {
-            txHash: String(evt.transactionHash),
-            blockNumber: Number(evt.blockNumber),
-            caller: String(evt.args[1]),
-            token: String(evt.args[2]),
-            amountIn: BigInt(evt.args[3]),
-            bounty: BigInt(evt.args[4])
-          };
-        }
-      } catch {
-        // keep null
-      }
-    }
-    setLastExecutorExec(recentExecutor);
-  }
 
   async function load() {
     if (!flashBackrunner) return onToast({ kind: "bad", msg: "FlashLoanBackrunner not configured." });
@@ -1872,20 +1770,29 @@ function BackrunPanel({
     onToast(null);
     setBusy(true);
     try {
-      const r = await flashBackrunner.getPendingBackrun(normalizedPoolId);
+      const full = await flashBackrunner.pendingBackruns(normalizedPoolId);
+      const poolKey = full[0];
+      const token0 = String(poolKey.currency0 ?? poolKey[0]);
+      const token1 = String(poolKey.currency1 ?? poolKey[1]);
+      const runner = flashBackrunner.runner as any;
+      const [token0Meta, token1Meta] = await Promise.all([readTokenMeta(token0, runner), readTokenMeta(token1, runner)]);
+      setPoolMeta({
+        token0: { address: token0, symbol: token0Meta.symbol, decimals: token0Meta.decimals },
+        token1: { address: token1, symbol: token1Meta.symbol, decimals: token1Meta.decimals }
+      });
       setInfo({
-        targetPrice: r[0],
-        currentPrice: r[1],
-        backrunAmount: r[2],
-        zeroForOne: r[3],
-        timestamp: r[4],
-        blockNumber: r[5],
-        executed: r[6]
+        targetPrice: full[1],
+        currentPrice: full[2],
+        backrunAmount: full[3],
+        zeroForOne: full[4],
+        timestamp: full[5],
+        blockNumber: full[6],
+        executed: full[7]
       });
       // Check profitability
       try {
         const prof = await flashBackrunner.checkProfitability(normalizedPoolId);
-        setProfitability({ profitable: Boolean(prof[0]), estimatedProfit: BigInt(prof[1]) });
+        setProfitability({ profitable: Boolean(prof[0]) });
       } catch {
         setProfitability(null);
       }
@@ -1905,7 +1812,6 @@ function BackrunPanel({
       } else {
         setExecutorConfig(null);
       }
-      await loadRecentExecutionEvents(normalizedPoolId);
     } catch (e: any) {
       onToast({ kind: "bad", msg: fmtContractError(e, flashBackrunner) });
     } finally {
@@ -1922,16 +1828,7 @@ function BackrunPanel({
       const tx = await flashBackrunExecutorAgent.execute(normalizedPoolId);
       const receipt = await tx.wait(1);
       if (!receipt) throw new Error("No transaction receipt returned.");
-      const execEvent = parseExecutorEventFromReceipt(receipt);
-      const backrunEvent = parseBackrunnerEventFromReceipt(receipt);
-      if (execEvent) setLastExecutorExec(execEvent);
-      if (backrunEvent) setLastBackrunnerExec(backrunEvent);
-      onToast({
-        kind: "ok",
-        msg: execEvent
-          ? `Executor backrun tx=${shortAddr(receipt.hash)} bounty=${fmt18(execEvent.bounty)}`
-          : `Executor backrun tx=${shortAddr(receipt.hash)}`
-      });
+      onToast({ kind: "ok", msg: `Executor backrun tx=${shortAddr(receipt.hash)}` });
       await load();
     } catch (e: any) {
       onToast({ kind: "bad", msg: fmtContractError(e, flashBackrunExecutorAgent) });
@@ -1939,6 +1836,25 @@ function BackrunPanel({
       setBusy(false);
     }
   }
+
+  const tokenInMeta = info && poolMeta ? (info.zeroForOne ? poolMeta.token0 : poolMeta.token1) : null;
+  const pricePairLabel = poolMeta ? `${poolMeta.token1.symbol}/${poolMeta.token0.symbol}` : "Token1/Token0";
+  const targetPrice18 =
+    info && poolMeta
+      ? adjustPrice18ForTokenDecimals(BigInt(info.targetPrice), poolMeta.token0.decimals, poolMeta.token1.decimals)
+      : 0n;
+  const currentPrice18 =
+    info && poolMeta
+      ? adjustPrice18ForTokenDecimals(BigInt(info.currentPrice), poolMeta.token0.decimals, poolMeta.token1.decimals)
+      : 0n;
+  const opportunityAmount = info ? BigInt(info.backrunAmount) : 0n;
+  const executionAmount =
+    info && executorConfig
+      ? executorConfig.maxFlashloanAmount > 0n && opportunityAmount > executorConfig.maxFlashloanAmount
+        ? executorConfig.maxFlashloanAmount
+        : opportunityAmount
+      : opportunityAmount;
+  const amountCapped = info && executorConfig ? executionAmount < opportunityAmount : false;
 
   return (
     <div className="row">
@@ -1991,13 +1907,17 @@ function BackrunPanel({
                 <b>Executor Max Flashloan</b>
                 <span>
                   {executorConfig
-                    ? `${fmt18(executorConfig.maxFlashloanAmount)} (${String(executorConfig.maxFlashloanAmount)} raw)`
+                    ? `${fmt18(executorConfig.maxFlashloanAmount, tokenInMeta?.decimals ?? 18)} ${tokenInMeta?.symbol ?? ""}`
                     : "Load to fetch"}
                 </span>
               </div>
               <div className="kv">
                 <b>Executor Min Profit</b>
-                <span>{executorConfig ? String(executorConfig.minProfit) : "Load to fetch"}</span>
+                <span>
+                  {executorConfig
+                    ? `${fmt18(executorConfig.minProfit, tokenInMeta?.decimals ?? 18)} ${tokenInMeta?.symbol ?? ""}`
+                    : "Load to fetch"}
+                </span>
               </div>
             </>
           ) : null}
@@ -2032,19 +1952,30 @@ function BackrunPanel({
             </div>
             <div className="kv">
               <b>Target Price</b>
-              <span>{fmt18(BigInt(info.targetPrice))} DAI/WETH</span>
+              <span>{fmt18(targetPrice18)} {pricePairLabel}</span>
             </div>
             <div className="kv">
               <b>Current Price</b>
-              <span>{fmt18(BigInt(info.currentPrice))} DAI/WETH</span>
+              <span>{fmt18(currentPrice18)} {pricePairLabel}</span>
             </div>
             <div className="kv">
               <b>Backrun Amount</b>
-              <span>{fmt18(BigInt(info.backrunAmount))} WETH</span>
+              <span>{fmt18(opportunityAmount, tokenInMeta?.decimals ?? 18)} {tokenInMeta?.symbol ?? ""}</span>
+            </div>
+            <div className="kv">
+              <b>Executable Amount</b>
+              <span>
+                {fmt18(executionAmount, tokenInMeta?.decimals ?? 18)} {tokenInMeta?.symbol ?? ""}
+                {amountCapped ? " (capped by executor)" : ""}
+              </span>
             </div>
             <div className="kv">
               <b>Direction</b>
-              <span>{info.zeroForOne ? "Zero → One (sell WETH)" : "One → Zero (buy WETH)"}</span>
+              <span>
+                {info.zeroForOne
+                  ? `Zero -> One (sell ${poolMeta?.token0.symbol ?? "token0"}, buy ${poolMeta?.token1.symbol ?? "token1"})`
+                  : `One -> Zero (sell ${poolMeta?.token1.symbol ?? "token1"}, buy ${poolMeta?.token0.symbol ?? "token0"})`}
+              </span>
             </div>
             <div className="kv">
               <b>Detected Block</b>
@@ -2063,63 +1994,10 @@ function BackrunPanel({
                     {profitability.profitable ? "Yes — Ready to execute" : "No"}
                   </span>
                 </div>
-                <div className="kv">
-                  <b>Estimated Profit</b>
-                  <span>{fmt18(profitability.estimatedProfit)} WETH</span>
-                </div>
               </>
             )}
           </div>
         )}
-
-        <div className="kvs mt-4">
-          <div className="kv">
-            <b>Last Backrunner Event</b>
-            <span>{lastBackrunnerExec ? shortAddr(lastBackrunnerExec.txHash) : "—"}</span>
-          </div>
-          <div className="kv">
-            <b>Flash Loan Amount</b>
-            <span>
-              {lastBackrunnerExec ? `${fmt18(lastBackrunnerExec.flashLoanAmount)} WETH` : "—"}
-            </span>
-          </div>
-          <div className="kv">
-            <b>Backrunner Profit</b>
-            <span>
-              {lastBackrunnerExec ? `${fmt18(lastBackrunnerExec.profit)} WETH` : "—"}
-            </span>
-          </div>
-          <div className="kv">
-            <b>LP Share (80%)</b>
-            <span>
-              {lastBackrunnerExec ? `${fmt18(lastBackrunnerExec.lpShare)} WETH` : "—"}
-            </span>
-          </div>
-          <div className="kv">
-            <b>Keeper Bounty (20%)</b>
-            <span>
-              {lastBackrunnerExec
-                ? `${fmt18(lastBackrunnerExec.profit - lastBackrunnerExec.lpShare)} WETH`
-                : "—"}
-            </span>
-          </div>
-          <div className="kv">
-            <b>Backrunner Keeper</b>
-            <span>{lastBackrunnerExec ? shortAddr(lastBackrunnerExec.keeper) : "—"}</span>
-          </div>
-          <div className="kv">
-            <b>Last Executor Event</b>
-            <span>{lastExecutorExec ? shortAddr(lastExecutorExec.txHash) : "—"}</span>
-          </div>
-          <div className="kv">
-            <b>Executor Bounty</b>
-            <span>{lastExecutorExec ? `${fmt18(lastExecutorExec.bounty)} WETH` : "—"}</span>
-          </div>
-          <div className="kv">
-            <b>Executor Caller</b>
-            <span>{lastExecutorExec ? shortAddr(lastExecutorExec.caller) : "—"}</span>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -2348,8 +2226,8 @@ function AdminPanel({
             </div>
 
             <p className="muted mt-4">
-              💡 <b>Tip:</b> To test the full flow, register your connected wallet address as a route agent. Then you
-              can create intents and submit proposals yourself.
+              <b>Tip:</b> To test the full flow, register your connected wallet address as a route agent. Then you can
+              create intents and submit proposals yourself.
             </p>
           </>
         )}
