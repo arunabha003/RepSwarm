@@ -99,12 +99,24 @@ contract DeployAnvilSepoliaFork is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
+        uint256 wrapWethAmount = vm.envOr("BOOTSTRAP_WRAP_WETH_AMOUNT", uint256(1_000 ether));
+        uint256 stableBootstrapAmount = vm.envOr("BOOTSTRAP_STABLE_AMOUNT", uint256(5_000_000 ether));
+        uint256 hookLiquidityDelta = vm.envOr("HOOK_LIQUIDITY_DELTA", uint256(100 ether));
+        uint256 repayLiquidityDelta = vm.envOr("REPAY_LIQUIDITY_DELTA", uint256(300 ether));
 
         console.log("=== DeployAnvilSepoliaFork ===");
         console.log("Deployer:");
         console.log(deployer);
         console.log("PoolManager:");
         console.log(POOL_MANAGER);
+        console.log("Bootstrap WETH:");
+        console.log(wrapWethAmount);
+        console.log("Bootstrap Stable:");
+        console.log(stableBootstrapAmount);
+        console.log("Hook Liquidity Delta:");
+        console.log(hookLiquidityDelta);
+        console.log("Repay Liquidity Delta:");
+        console.log(repayLiquidityDelta);
 
         vm.startBroadcast(deployerPrivateKey);
 
@@ -185,7 +197,7 @@ contract DeployAnvilSepoliaFork is Script {
         liquidityRouter = new PoolModifyLiquidityTest(IPoolManager(POOL_MANAGER));
 
         // 10) Create pools + add liquidity
-        _initPoolsAndLiquidity(deployer);
+        _initPoolsAndLiquidity(deployer, wrapWethAmount, stableBootstrapAmount, hookLiquidityDelta, repayLiquidityDelta);
         flashBackrunner.setRepayPoolKey(hookPoolId, repayPoolKey);
 
         // 11) Optional: register hook agents on ERC-8004 and bind their IDs into the agent contracts.
@@ -225,8 +237,15 @@ contract DeployAnvilSepoliaFork is Script {
         deployed = SwarmHook(payable(deployedAddress));
     }
 
-    function _initPoolsAndLiquidity(address deployer) internal {
+    function _initPoolsAndLiquidity(
+        address deployer,
+        uint256 wrapWethAmount,
+        uint256 stableBootstrapAmount,
+        uint256 hookLiquidityDelta,
+        uint256 repayLiquidityDelta
+    ) internal {
         IPoolManager pm = IPoolManager(POOL_MANAGER);
+        require(hookLiquidityDelta > 0 && repayLiquidityDelta > 0, "liquidityDelta=0");
 
         (uint256 oraclePrice,) = oracleRegistry.getLatestPrice(WETH, DAI);
         require(oraclePrice > 0, "oracle price unavailable");
@@ -268,13 +287,11 @@ contract DeployAnvilSepoliaFork is Script {
         int24 tickUpper = _floorTick(_clampTick(tick + 60_000), hookPoolKey.tickSpacing);
 
         // Funds: WETH via deposit, DAI must be pre-funded on the fork (see docs).
-        uint256 daiNeed = 5_000_000 ether;
-        uint256 wethNeed = 1_000 ether;
+        require(IERC20(DAI).balanceOf(deployer) >= stableBootstrapAmount, "fund deployer with DAI first");
 
-        require(IERC20(DAI).balanceOf(deployer) >= daiNeed, "fund deployer with DAI first");
-
-        // Ensure deployer has WETH.
-        IWETH9Like(WETH).deposit{value: wethNeed}();
+        if (wrapWethAmount > 0) {
+            IWETH9Like(WETH).deposit{value: wrapWethAmount}();
+        }
 
         // Optional: seed Aave liquidity on the local fork so flashloans can always execute.
         // This is "best effort" (won't revert the whole deployment if Aave rejects supply).
@@ -291,7 +308,7 @@ contract DeployAnvilSepoliaFork is Script {
             ModifyLiquidityParams({
                 tickLower: tickLower,
                 tickUpper: tickUpper,
-                liquidityDelta: 100 ether,
+                liquidityDelta: int256(hookLiquidityDelta),
                 salt: bytes32(uint256(1))
             }),
             ""
@@ -302,7 +319,7 @@ contract DeployAnvilSepoliaFork is Script {
             ModifyLiquidityParams({
                 tickLower: tickLower,
                 tickUpper: tickUpper,
-                liquidityDelta: 300 ether,
+                liquidityDelta: int256(repayLiquidityDelta),
                 salt: bytes32(uint256(2))
             }),
             ""
