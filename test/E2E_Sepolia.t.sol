@@ -336,6 +336,8 @@ contract E2ESepoliaTest is Test {
         vm.startPrank(keeper);
         IERC20Like(tokenIn).approve(address(flashBackrunner), type(uint256).max);
         flashBackrunner.executeBackrunWithCapital(hookPoolId, amountIn, 0);
+        vm.expectRevert(FlashLoanBackrunner.NoOpportunity.selector);
+        flashBackrunner.executeBackrunWithCapital(hookPoolId, amountIn, 0);
         vm.stopPrank();
 
         uint256 keeperTokenAfter = IERC20Like(tokenIn).balanceOf(keeper);
