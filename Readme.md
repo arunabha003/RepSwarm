@@ -77,11 +77,11 @@ Deployed via `script/DeploySwarmProtocol.s.sol` on Ethereum Sepolia (`chainId=11
 | OracleRegistry | [`0x42b598ff76b62A0fd273560F691896102c5a3A4A`](https://sepolia.etherscan.io/address/0x42b598ff76b62A0fd273560F691896102c5a3A4A) |
 | FlashLoanBackrunner | [`0xAf26D906b2AE22276D8d07183aEc66609035F196`](https://sepolia.etherscan.io/address/0xAf26D906b2AE22276D8d07183aEc66609035F196) |
 | FlashBackrunExecutorAgent | [`0xD6D9473EA9f155F25f9D15CE896171075961A2a4`](https://sepolia.etherscan.io/address/0xD6D9473EA9f155F25f9D15CE896171075961A2a4) |
-| SimpleRouteAgent | [`0xDf1cb317Fff7CC63100682e9E3ea0eAce8D514d4`](https://sepolia.etherscan.io/address/0xDf1cb317Fff7CC63100682e9E3ea0eAce8D514d4) |
+| SimpleRouteAgent | [`0xDf1cb317Fff7CC63100682e9E3ea0eAce8D514d4`](https://sepolia.etherscan.io/address/0xDf1cb317Fff7CC63100682e9E3ea0eAce8D514d4) · [8004Scan](https://testnet.8004scan.io/agents/sepolia/983) |
 | SwarmAgentRegistry | [`0x048b0819f3942e1B548579004a486b6029217d13`](https://sepolia.etherscan.io/address/0x048b0819f3942e1B548579004a486b6029217d13) |
-| ArbitrageAgent | [`0xFA1591069f7f1e48e8758179014f19F65fF44b26`](https://sepolia.etherscan.io/address/0xFA1591069f7f1e48e8758179014f19F65fF44b26) (ERC-8004 ID `980`) |
-| DynamicFeeAgent | [`0x6Be9E7Db2335fe26fB0741D9E1fC8c581FCBfBDd`](https://sepolia.etherscan.io/address/0x6Be9E7Db2335fe26fB0741D9E1fC8c581FCBfBDd) (ERC-8004 ID `981`) |
-| BackrunAgent | [`0xe2B466898D45f6Ae73Ca20b5e85eA584d0589216`](https://sepolia.etherscan.io/address/0xe2B466898D45f6Ae73Ca20b5e85eA584d0589216) (ERC-8004 ID `982`) |
+| ArbitrageAgent | [`0xFA1591069f7f1e48e8758179014f19F65fF44b26`](https://sepolia.etherscan.io/address/0xFA1591069f7f1e48e8758179014f19F65fF44b26) · [8004Scan](https://testnet.8004scan.io/agents/sepolia/980) |
+| DynamicFeeAgent | [`0x6Be9E7Db2335fe26fB0741D9E1fC8c581FCBfBDd`](https://sepolia.etherscan.io/address/0x6Be9E7Db2335fe26fB0741D9E1fC8c581FCBfBDd) · [8004Scan](https://testnet.8004scan.io/agents/sepolia/981) |
+| BackrunAgent | [`0xe2B466898D45f6Ae73Ca20b5e85eA584d0589216`](https://sepolia.etherscan.io/address/0xe2B466898D45f6Ae73Ca20b5e85eA584d0589216) · [8004Scan](https://testnet.8004scan.io/agents/sepolia/982) |
 
 **Tokens (Sepolia)**:
 - WETH: [`0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c`](https://sepolia.etherscan.io/address/0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c)
