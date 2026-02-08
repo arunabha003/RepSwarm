@@ -202,7 +202,6 @@ RUN_MAINNET_E2E=true forge test --match-contract E2EMainnetTest -vvv
 | ERC-8004 | `test/ERC8004Integration.t.sol` | Identity + reputation + coordinator gating |
 | Reputation Switch | `test/AgentExecutorReputationSwitch_Sepolia.t.sol` | Reputation threshold switching |
 | E2E Sepolia | `test/E2E_Sepolia.t.sol` | Full flow on Sepolia fork |
-| E2E Mainnet | `test/E2E_Mainnet.t.sol` | Full flow on Mainnet fork |
 
 ---
 
