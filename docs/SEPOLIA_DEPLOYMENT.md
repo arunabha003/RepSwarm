@@ -45,8 +45,8 @@ cast call 0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357 "balanceOf(address)(uint256
 ## 3) Configure Environment
 
 ```bash
-export SEPOLIA_RPC_URL="https://eth-sepolia.g.alchemy.com/v2/APIKEY"
-export PRIVATE_KEY=""
+export SEPOLIA_RPC_URL="https://eth-sepolia.g.alchemy.com/v2/API_KEY"
+export PRIVATE_KEY="0x361ead28996cd9eec0811785bc7e94342ec8eb3156f73303a8706f2cb70cd9b9"
 
 export POOL_MANAGER=0x8C4BcBE6b9eF47855f97E675296FA3F6fafa5F1A
 export TREASURY=0x28ea4eF61ac4cca3ed6a64dBb5b2D4be1aDC9814
@@ -145,9 +145,3 @@ Use printed addresses in `frontend/.env`:
 - `VITE_POOL_TICK_SPACING` = `60`
 - `VITE_POOL_HOOKS` = deployed `SwarmHook`
 
-## 8) Operational Notes
-
-- Backrun detection is automatic in hook flow.
-- Backrun execution is transaction-triggered (permissionless via `FlashBackrunExecutorAgent`).
-- Route proposal/execution can be one-click from frontend using `SimpleRouteAgent`.
-- On-chain scoring is enabled via `AgentExecutor.setOnchainScoringConfig`, so no separate scoring server is required.

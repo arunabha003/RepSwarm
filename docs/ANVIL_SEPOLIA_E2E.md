@@ -44,6 +44,27 @@ forge script script/DeployAnvilSepoliaFork.s.sol:DeployAnvilSepoliaFork \
   --broadcast -vvv
 ```
 
+**Current defaults** (latest deployment):
+- `BOOTSTRAP_WRAP_WETH_AMOUNT=1000000000000000000000` (1000 WETH)
+- `BOOTSTRAP_STABLE_AMOUNT=5000000000000000000000000` (5M DAI)
+- `HOOK_LIQUIDITY_DELTA=100000000000000000000` (100 WETH)
+- `REPAY_LIQUIDITY_DELTA=300000000000000000000` (300 WETH)
+
+For larger DAI->WETH swap outputs (to avoid shallow-liquidity caps), increase bootstrap + liquidity params:
+
+```bash
+PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+BOOTSTRAP_WRAP_WETH_AMOUNT=5000000000000000000000 \
+BOOTSTRAP_STABLE_AMOUNT=20000000000000000000000000 \
+HOOK_LIQUIDITY_DELTA=2000000000000000000000 \
+REPAY_LIQUIDITY_DELTA=4000000000000000000000 \
+SEED_AAVE_LIQUIDITY=true \
+SEED_AAVE_DAI=false \
+forge script script/DeployAnvilSepoliaFork.s.sol:DeployAnvilSepoliaFork \
+  --rpc-url http://127.0.0.1:8545 \
+  --broadcast -vvv
+```
+
 The script prints a “LOCAL DEPLOY SUMMARY” including:
 - `SwarmCoordinator`
 - `AgentExecutor`
@@ -55,6 +76,11 @@ Notes:
 - `SEED_AAVE_LIQUIDITY=true` is recommended for local E2E. It tries (best-effort) to `supply()` WETH + DAI into Aave so flashloans work deterministically on the fork.
 - Some Aave Sepolia reserves (notably stables) can be disabled/frozen at times. By default we only seed WETH now.
 - To also attempt seeding DAI: set `SEED_AAVE_DAI=true` (may revert depending on Aave config).
+- New env knobs in deploy script:
+  - `BOOTSTRAP_WRAP_WETH_AMOUNT`: how much ETH to wrap as WETH before adding liquidity.
+  - `BOOTSTRAP_STABLE_AMOUNT`: minimum stable balance required in deployer wallet.
+  - `HOOK_LIQUIDITY_DELTA`: hooked pool depth (main swap path).
+  - `REPAY_LIQUIDITY_DELTA`: repay pool depth (backrun round-trip path).
 
 If you already deployed without seeding, you can run:
 
@@ -131,20 +157,3 @@ Open the printed URL (default `http://localhost:3000`).
 - Tab `Intent Desk`: load the `intentId`, then click `Auto Propose + Execute via Router`.
 - Tab `LP Donations`: compute `poolId` (helper) and call `Donate To LPs` once there are accumulated fees/profits.
 
-## 6) Optional: External Automation Bot (Automatic Backruns)
-
-No local keeper service is required. If you want automatic execution, run any external bot that watches
-`BackrunOpportunityDetected` and submits:
-
-```bash
-cast send <FLASH_BACKRUN_EXECUTOR_AGENT_ADDRESS> \
-  "execute(bytes32)(address,uint256)" <HOOK_POOL_ID> \
-  --rpc-url http://127.0.0.1:8545 \
-  --private-key <ANY_FUNDED_ANVIL_KEY>
-```
-
-Important:
-- The deploy script already authorizes `FlashBackrunExecutorAgent` as keeper/forwarder.
-- If your automation calls backrunner methods directly, authorize that caller with:
-  - `FlashLoanBackrunner.setKeeperAuthorization(caller,true)`
-  - `FlashLoanBackrunner.setForwarderAuthorization(caller,true)`
