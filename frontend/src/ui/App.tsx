@@ -325,6 +325,12 @@ export function App() {
         </button>
       </div>
 
+      <div className="envNotice">
+        Low-liquidity warning: live Sepolia pool depth is currently limited, so loading state, swap outputs, and backrun
+        analytics may appear inconsistent. For reliable end-to-end testing, use the local fork setup in
+        `docs/ANVIL_SEPOLIA_E2E.md from github`.
+      </div>
+
       {/* Toast Notification */}
       {toast && (
         <div className={`toast ${toast.kind}`}>

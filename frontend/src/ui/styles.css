@@ -206,6 +206,17 @@ a:hover { color: var(--brand); }
   box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
 }
 
+.envNotice {
+  margin: 0 0 14px;
+  padding: 11px 13px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(251, 191, 36, 0.24);
+  background: var(--amber-bg);
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* ==================== Cards ==================== */
 
 .card {
